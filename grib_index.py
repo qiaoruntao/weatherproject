@@ -381,6 +381,8 @@ def query(
             params.extend(list(vars_list))
         # logging.info("[query] base=%s params=%s", base, params)
         rows = cur.execute(base, params).fetchall()
+        # Sort rows by cycle_time (column 3) descending to prefer newer creates in tie-breaks
+        rows.sort(key=lambda r: r[3], reverse=True)
         # logging.info("[query] rows=%s", rows)
         if vars_list and require_all:
             # require ALL variables -> group by file and check set inclusion
@@ -689,6 +691,16 @@ def query_data(
             print(f"[WARN] query_data failed on {path}: {e}", file=sys.stderr)
             continue
 
+    # Tie-break: for identical (variable, prediction_time), keep newest create_time
+    if rows:
+        best = {}
+        for r in rows:
+            key = (r.get("type"), r.get("prediction_time"))
+            prev = best.get(key)
+            # Compare ISO strings lexicographically; they are UTC ISO so lexical == chronological
+            if prev is None or (r.get("create_time") or "") > (prev.get("create_time") or ""):
+                best[key] = r
+        rows = list(best.values())
     return rows
 
 
