@@ -319,27 +319,20 @@ def build_index(root: str, db_path: str, patterns=("*.grb2", "*.grib2")) -> None
 # ===================== Query =====================
 
 def query(
-        db_path: str,
         start_iso: str,
         end_iso: str,
-        lon_min_0_360: float,
-        lon_max_0_360: float,
-        lat_min: float,
-        lat_max: float,
         vars_any: Optional[Iterable[str]] = None,  # match ANY of these variables
-        require_all: bool = False,  # if True, require all listed variables
         products: Optional[Iterable[str]] = None,  # e.g., ["flxf","ocnf"]
 ) -> List[dict]:
     """
-    Query using new global (non-spatial) index produced by bunk_index.py.
-    Ignores spatial args (all files are global). Filters by time window,
-    product, and variables.
+    Query using the global (non-spatial) index produced by bunk_index.py.
+    Filters by time window, product, and variables.
     """
     # Ensure DB exists before opening
-    if not os.path.exists(db_path):
-        logging.error("[query] SQLite DB not found: %s", db_path)
+    if not os.path.exists("grib_index.sqlite"):
+        logging.error("[query] SQLite DB not found: grib_index.sqlite")
         return []
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect("grib_index.sqlite")
     cur = conn.cursor()
     # Compose query
     where_clauses = []
@@ -351,9 +344,9 @@ def query(
     if products:
         where_clauses.append("product IN ({})".format(",".join("?" * len(products))))
         params.extend([p.lower() for p in products])
-    if vars_any and not require_all:
-        where_clauses.append("var IN ({})".format(",".join("?" * len(vars_any))))
-        params.extend(list(vars_any))
+    # if vars_any:
+    #     where_clauses.append("var IN ({})".format(",".join("?" * len(vars_any))))
+    #     params.extend(list(vars_any))
 
     base = f"""
         SELECT product, file_path,
@@ -366,22 +359,14 @@ def query(
         WHERE {" AND ".join(where_clauses)}
         GROUP BY product, file_path
     """
-    # If require_all, filter groups that do not have all requested variables
-    having_clause = ""
-    if vars_any and require_all:
-        having_clause = f" HAVING COUNT(DISTINCT var) >= {len(vars_any)}"
     order_clause = " ORDER BY cycle_time DESC"
-    sql = base + having_clause + order_clause
+    sql = base + order_clause
+    logging.info(f"[query] SQL: {sql} {params}")
     rows = cur.execute(sql, params).fetchall()
-    # If require_all, further restrict to only files containing all requested vars
     result = []
     for row in rows:
         product, path, cycle_time, time_start, time_end, variables_str, nvars = row
         variables = sorted(set(variables_str.split(","))) if variables_str else []
-        if vars_any and require_all:
-            # Make sure all requested vars are present
-            if not set(vars_any).issubset(set(variables)):
-                continue
         result.append({
             "file_id": None,
             "path": path,
@@ -408,9 +393,7 @@ def query_data(
         lat_min: float,
         lat_max: float,
         vars_any: Optional[Iterable[str]] = None,  # match ANY of these variables
-        require_all: bool = False,  # if True, require all listed variables
         products: Optional[Iterable[str]] = None,  # e.g., ["flxf","ocnf"]
-        db_path: str = "grib_index.sqlite",
 ) -> List[dict]:
     """
     Runs `query()` to find candidate files, opens each file, subsets by time/space/vars
@@ -431,18 +414,12 @@ def query_data(
     """
     # First, shortlist files using the existing index
     candidates = query(
-        db_path=db_path,
         start_iso=start_iso,
         end_iso=end_iso,
-        lon_min_0_360=lon_min_0_360,
-        lon_max_0_360=lon_max_0_360,
-        lat_min=lat_min,
-        lat_max=lat_max,
         vars_any=vars_any,
-        require_all=require_all,
         products=products,
     )
-    # logging.info(f"Found {len(candidates)} candidates")
+    logging.info(f"Found {len(candidates)} candidates")
     rows: List[dict] = []
     if not candidates:
         return rows
@@ -601,9 +578,7 @@ def query_data(
             # Limit to requested variables (if any)
             var_names = list(ds.data_vars.keys())
             if vars_any:
-                # ANY vs ALL logic: skip file if ALL requested but missing some
-                if require_all and not set(vars_any).issubset(var_names):
-                    continue
+                # Using default ANY behavior
                 var_names = [v for v in var_names if v in set(vars_any)]
 
             # For each variable, iterate prediction times and compute min/max over non-time dims
@@ -673,58 +648,3 @@ def query_data(
                 best[key] = r
         rows = list(best.values())
     return rows
-
-
-# ===================== FastAPI service (moved) =====================
-# The FastAPI app has been extracted to a separate module: grib_api.py
-# This file intentionally contains no FastAPI code to keep core index/query pure.
-# ===================== CLI =====================
-
-def _cli():
-    import argparse
-    ap = argparse.ArgumentParser(description="Index and query GRIB2 files (0..360 lon, per-variable).")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    b = sub.add_parser("build", help="Build/refresh the index from a directory")
-    b.add_argument("root", help="Directory containing .grb2 files")
-    b.add_argument("-d", "--db", default="grib_index.sqlite", help="SQLite DB path")
-    b.add_argument("-p", "--pattern", action="append", default=None,
-                   help="Glob patterns, default: *.grb2, *.grib2")
-
-    q = sub.add_parser("query", help="Query by time range + bbox + variables")
-    q.add_argument("-d", "--db", default="grib_index.sqlite")
-    q.add_argument("--start", required=True, help="ISO start (UTC), e.g. 2025-10-02T00:00:00Z")
-    q.add_argument("--end", required=True, help="ISO end (UTC)")
-    q.add_argument("--lon-min", type=float, required=True, help="0..360; may be > lon-max to wrap")
-    q.add_argument("--lon-max", type=float, required=True, help="0..360; may be < lon-min to wrap")
-    q.add_argument("--lat-min", type=float, required=True)
-    q.add_argument("--lat-max", type=float, required=True)
-    q.add_argument("--var", dest="vars", action="append", default=None,
-                   help="Variable shortName to require (repeatable). If multiple given, default is ANY; use --all to require ALL.")
-    q.add_argument("--all", dest="require_all", action="store_true",
-                   help="Require ALL listed variables (default is ANY).")
-    q.add_argument("--product", dest="products", action="append", default=None,
-                   help="Filter products, e.g. FLXF or OCNF; repeatable")
-
-    args = ap.parse_args()
-    if args.cmd == "build":
-        pats = tuple(args.pattern) if args.pattern else ("*.grb2", "*.grib2")
-        build_index(args.root, args.db, patterns=pats)
-    else:
-        rows = query(
-            db_path=args.db,
-            start_iso=args.start,
-            end_iso=args.end,
-            lon_min_0_360=args.lon_min,
-            lon_max_0_360=args.lon_max,
-            lat_min=args.lat_min,
-            lat_max=args.lat_max,
-            vars_any=[v for v in (args.vars or [])],
-            require_all=args.require_all,
-            products=[p.lower() for p in (args.products or [])] or None,
-        )
-        print(json.dumps(rows, indent=2))
-
-
-if __name__ == "__main__":
-    _cli()
