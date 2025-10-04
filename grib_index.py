@@ -8,16 +8,21 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import os, sys, json, re, sqlite3, pathlib
+import os
+import pathlib
+import re
+import sqlite3
+import sys
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple, Set
 
-# Additional imports for data access/subsetting
-import xarray as xr
+import cfgrib  # for open_datasets across groups
 import numpy as np
 import pandas as pd
-import cfgrib  # for open_datasets across groups
+# Additional imports for data access/subsetting
+import xarray as xr
 from eccodes import (  # type: ignore
     codes_grib_new_from_file,
     codes_get, codes_get_long, codes_get_double,
@@ -326,8 +331,9 @@ def query(
         products: Optional[Iterable[str]] = None,  # e.g., ["flxf","ocnf"]
 ) -> List[dict]:
     """
-    Fast query in 0..360 lon space. Supports wrap (lon_min > lon_max) by
-    running two sub-queries and unioning results.
+    Query using new global (non-spatial) index produced by bunk_index.py.
+    Ignores spatial args (all files are global). Filters by time window,
+    product, and variables.
     """
     # Ensure DB exists before opening
     if not os.path.exists(db_path):
@@ -335,97 +341,62 @@ def query(
         return []
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    try:
-        cnt_files = cur.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        cnt_recs = cur.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        cnt_rt = cur.execute("SELECT COUNT(*) FROM spatial_index").fetchone()[0]
-        # logging.info("[query] counts files=%s records=%s spatial_index=%s db=%s",
-        #              cnt_files, cnt_recs, cnt_rt, os.path.abspath(db_path))
-    except Exception as e:
-        logging.warning("[query] failed to read counts: %s", e)
-    prods = tuple(p.lower() for p in products) if products else None
-    vars_list = tuple(vars_any) if vars_any else None
+    # Compose query
+    where_clauses = []
+    params = []
+    where_clauses.append("forecast_time_utc >= ?")
+    params.append(start_iso)
+    where_clauses.append("forecast_time_utc <= ?")
+    params.append(end_iso)
+    if products:
+        where_clauses.append("product IN ({})".format(",".join("?" * len(products))))
+        params.extend([p.lower() for p in products])
+    if vars_any and not require_all:
+        where_clauses.append("var IN ({})".format(",".join("?" * len(vars_any))))
+        params.extend(list(vars_any))
 
-    # logging.info("[query] counts prods=%s vars_list=%s vars_any=%s",prods,vars_list,vars_any)
-
-    def _one_span(a: float, b: float) -> List[dict]:
-        # R-Tree path
-        base = """
-               SELECT DISTINCT f.id,
-                               f.path,
-                               f.product,
-                               f.cycle_time,
-                               f.time_start,
-                               f.time_end,
-                               f.lat_min,
-                               f.lat_max,
-                               f.lon_min_0_360,
-                               f.lon_max_0_360,
-                               f.variables_json
-               FROM spatial_index s
-                        JOIN records r ON r.id = s.rec_id
-                        JOIN files f ON f.id = r.file_id
-               WHERE s.max_lon >= ?
-                 AND s.min_lon <= ?
-                 AND s.max_lat >= ?
-                 AND s.min_lat <= ?
-                 AND f.time_end >= ?
-                 AND f.time_start <= ? \
-               """
-        params = [a, b, lat_min, lat_max, start_iso, end_iso]
-        if prods:
-            base += " AND f.product IN ({})".format(",".join("?" * len(prods)))
-            params.extend(list(prods))
-        if vars_list and not require_all:
-            base += " AND r.var IN ({})".format(",".join("?" * len(vars_list)))
-            params.extend(list(vars_list))
-        # logging.info("[query] base=%s params=%s", base, params)
-        rows = cur.execute(base, params).fetchall()
-        # Sort rows by cycle_time (column 3) descending to prefer newer creates in tie-breaks
-        rows.sort(key=lambda r: r[3], reverse=True)
-        # logging.info("[query] rows=%s", rows)
-        if vars_list and require_all:
-            # require ALL variables -> group by file and check set inclusion
-            file_ids = [r[0] for r in rows]
-            if not file_ids:
-                return []
-            qmarks = ",".join("?" * len(file_ids))
-            var_map = {}
-            for fid, var in cur.execute(f"SELECT file_id,var FROM records WHERE file_id IN ({qmarks})", file_ids):
-                var_map.setdefault(fid, set()).add(var)
-            need = set(vars_list)
-            # logging.info("[query] var_map=%s need=%s", var_map, need)
-            rows = [r for r in rows if var_map.get(r[0], set()).issuperset(need)]
-
-        # de-dup by file id; convert to dict
-        seen, out = set(), []
-        for r in rows:
-            if r[0] in seen:
+    base = f"""
+        SELECT product, file_path,
+               MAX(run_time_utc) as cycle_time,
+               MIN(forecast_time_utc) as time_start,
+               MAX(forecast_time_utc) as time_end,
+               GROUP_CONCAT(DISTINCT var) as variables,
+               COUNT(DISTINCT var) as nvars
+        FROM records
+        WHERE {" AND ".join(where_clauses)}
+        GROUP BY product, file_path
+    """
+    # If require_all, filter groups that do not have all requested variables
+    having_clause = ""
+    if vars_any and require_all:
+        having_clause = f" HAVING COUNT(DISTINCT var) >= {len(vars_any)}"
+    order_clause = " ORDER BY cycle_time DESC"
+    sql = base + having_clause + order_clause
+    rows = cur.execute(sql, params).fetchall()
+    # If require_all, further restrict to only files containing all requested vars
+    result = []
+    for row in rows:
+        product, path, cycle_time, time_start, time_end, variables_str, nvars = row
+        variables = sorted(set(variables_str.split(","))) if variables_str else []
+        if vars_any and require_all:
+            # Make sure all requested vars are present
+            if not set(vars_any).issubset(set(variables)):
                 continue
-            seen.add(r[0])
-            out.append({
-                "file_id": r[0],
-                "path": r[1],
-                "product": r[2],
-                "cycle_time": r[3],
-                "time_start": r[4],
-                "time_end": r[5],
-                "lat_min": r[6],
-                "lat_max": r[7],
-                "lon_min_0_360": r[8],
-                "lon_max_0_360": r[9],
-                "variables": json.loads(r[10]),
-            })
-        return out
-
-    if lon_min_0_360 <= lon_max_0_360:
-        results = _one_span(lon_min_0_360, lon_max_0_360)
-    else:
-        # wrap across 360 -> split into (a..360) and (0..b)
-        results = _one_span(lon_min_0_360, 360.0) + _one_span(0.0, lon_max_0_360)
-
+        result.append({
+            "file_id": None,
+            "path": path,
+            "product": product,
+            "cycle_time": cycle_time,
+            "time_start": time_start,
+            "time_end": time_end,
+            "lat_min": -90.0,
+            "lat_max": 90.0,
+            "lon_min_0_360": 0.0,
+            "lon_max_0_360": 360.0,
+            "variables": variables,
+        })
     conn.close()
-    return results
+    return result
 
 
 # ===================== query_data: open/subset files with xarray/cfgrib =====================
