@@ -402,6 +402,9 @@ def query(
     return results
 
 
+# ===================== FastAPI service (moved) =====================
+# The FastAPI app has been extracted to a separate module: grib_api.py
+# This file intentionally contains no FastAPI code to keep core index/query pure.
 # ===================== CLI =====================
 
 def _cli():
