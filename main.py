@@ -1,6 +1,5 @@
-import xarray as xr
-import pandas as pd
 import cfgrib
+import pandas as pd
 
 datasets = cfgrib.open_datasets("data/cfs/flxf2025100218.01.2025100218.grb2")
 # Open dataset (load all variables)
@@ -22,4 +21,5 @@ for ds in datasets:
 df = pd.DataFrame.from_records(records)
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 2000)
+df.to_excel('definitions.xlsx', index=False)
 print(df)
