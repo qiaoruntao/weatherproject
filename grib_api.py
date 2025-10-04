@@ -8,9 +8,9 @@ Run:
   uvicorn grib_api:app --host 0.0.0.0 --port 8000
 """
 
+import logging
 import os
 import sys
-import logging
 
 # Fail fast with a clear log if FastAPI stack is missing
 try:
