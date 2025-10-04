@@ -58,7 +58,7 @@ _basic = HTTPBasic()
 
 
 def _check_auth(credentials: HTTPBasicCredentials = Depends(_basic)) -> str:
-    user_expected = os.getenv("GRIB_API_USER", "weatherproject")
+    user_expected = os.getenv("GRIB_API_USER", "weatherpreview")
     pass_expected = os.getenv("GRIB_API_PASS", "afdsfdsfdsfsdfds")
     ok_user = secrets.compare_digest(credentials.username, user_expected)
     ok_pass = secrets.compare_digest(credentials.password, pass_expected)
