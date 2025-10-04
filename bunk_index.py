@@ -26,6 +26,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator, Optional
 
+# Optional: cfgrib/xarray for variable enumeration
+try:
+    import cfgrib  # type: ignore
+except Exception:
+    cfgrib = None
+
 # Requires: pip install eccodes
 try:
     from eccodes import (
@@ -178,6 +184,33 @@ def scan_grib_messages(file_path: str) -> list[MsgMeta]:
 
 
 # ---------------------------------------------
+# cfgrib/xarray variable enumeration helper
+def list_vars_from_cfgrib(file_path: str) -> set[str]:
+    """Return the set of variable short names present in the GRIB file using cfgrib groups.
+    Falls back to an empty set if cfgrib is unavailable or fails.
+    """
+    vars_set: set[str] = set()
+    if cfgrib is None:
+        return vars_set
+    try:
+        # Disable on-disk index files to avoid incompatible .idx warnings
+        datasets = cfgrib.open_datasets(file_path, indexpath="")  # multiple groups
+        try:
+            for ds in datasets:
+                for var in ds.data_vars:
+                    vars_set.add(var)
+        finally:
+            for ds in datasets:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        LOG.warning("cfgrib.open_datasets failed for %s: %s", file_path, e)
+    return vars_set
+
+
+# ---------------------------------------------
 # SQLite schema and writes
 SCHEMA_SQL = """
 PRAGMA journal_mode=WAL;
@@ -219,8 +252,13 @@ def index_file(db_path: str, file_path: str) -> int:
     """
     meta = parse_cfs_filename(file_path)
     msgs = scan_grib_messages(file_path)
-    if not msgs:
-        LOG.warning("No GRIB messages found: %s", file_path)
+    # Prefer cfgrib groups to enumerate variables at the dataset level
+    var_names = list_vars_from_cfgrib(file_path)
+    if not var_names and msgs:
+        # Fallback: derive variables from scanned messages
+        var_names = {m.var for m in msgs}
+    if not var_names:
+        LOG.warning("No GRIB variables found: %s", file_path)
         return 0
 
     inserted = 0
@@ -233,18 +271,28 @@ def index_file(db_path: str, file_path: str) -> int:
                       ?) ON CONFLICT(file_path, var, level_type, level_value, forecast_time_utc) DO NOTHING; \
               """
         abs_path = os.path.abspath(meta.path)
-        for m in msgs:
-            # Prefer per-message reference/forecast times; filename acts as fallback if needed
-            run_time = m.ref_time_iso
-            forecast_time = m.forecast_time_iso
+        # Insert exactly one row per variable for this file.
+        # Use filename-derived run/forecast times to avoid per-message duplication.
+        run_time = _to_utc_iso(meta.run_dt)
+        forecast_time = _to_utc_iso(meta.forecast_dt)
+        lead = int((meta.forecast_dt - meta.run_dt).total_seconds() // 3600)
+
+        for var in sorted(var_names):
             try:
                 conn.execute(sql, (
-                    meta.product, abs_path, run_time, forecast_time,
-                    int(m.lead_hours), m.var, m.level_type, m.level_value
+                    meta.product,
+                    abs_path,
+                    run_time,
+                    forecast_time,
+                    lead,
+                    var,
+                    None,  # level_type unknown at var-summary level
+                    None  # level_value unknown at var-summary level
                 ))
                 inserted += 1
             except sqlite3.DatabaseError as e:
-                LOG.error("DB insert failed for %s (%s/%s): %s", abs_path, m.var, m.level_type, e)
+                LOG.error("DB insert failed for %s (%s): %s", abs_path, var, e)
+        LOG.debug("[vars] %s -> %d variables inserted", os.path.basename(file_path), inserted)
     return inserted
 
 
