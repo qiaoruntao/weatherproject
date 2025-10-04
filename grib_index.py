@@ -13,18 +13,20 @@ import os, sys, json, re, sqlite3, pathlib
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple, Set
 
+# Additional imports for data access/subsetting
+import xarray as xr
+import numpy as np
+import pandas as pd
+import cfgrib  # for open_datasets across groups
 from eccodes import (  # type: ignore
     codes_grib_new_from_file,
     codes_get, codes_get_long, codes_get_double,
     codes_release,
 )
 
-# Additional imports for data access/subsetting
-import xarray as xr
-import numpy as np
-import pandas as pd
-import cfgrib  # for open_datasets across groups
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+xr.set_options(use_new_combine_kwarg_defaults=True)
 
 # ===================== Utilities =====================
 
@@ -337,13 +339,14 @@ def query(
         cnt_files = cur.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         cnt_recs = cur.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         cnt_rt = cur.execute("SELECT COUNT(*) FROM spatial_index").fetchone()[0]
-        logging.info("[query] counts files=%s records=%s spatial_index=%s db=%s",
-                     cnt_files, cnt_recs, cnt_rt, os.path.abspath(db_path))
+        # logging.info("[query] counts files=%s records=%s spatial_index=%s db=%s",
+        #              cnt_files, cnt_recs, cnt_rt, os.path.abspath(db_path))
     except Exception as e:
         logging.warning("[query] failed to read counts: %s", e)
     prods = tuple(p.lower() for p in products) if products else None
     vars_list = tuple(vars_any) if vars_any else None
-    logging.info("[query] counts prods=%s vars_list=%s vars_any=%s",prods,vars_list,vars_any)
+
+    # logging.info("[query] counts prods=%s vars_list=%s vars_any=%s",prods,vars_list,vars_any)
 
     def _one_span(a: float, b: float) -> List[dict]:
         # R-Tree path
@@ -376,9 +379,9 @@ def query(
         if vars_list and not require_all:
             base += " AND r.var IN ({})".format(",".join("?" * len(vars_list)))
             params.extend(list(vars_list))
-        logging.info("[query] base=%s params=%s", base, params)
+        # logging.info("[query] base=%s params=%s", base, params)
         rows = cur.execute(base, params).fetchall()
-        logging.info("[query] rows=%s", rows)
+        # logging.info("[query] rows=%s", rows)
         if vars_list and require_all:
             # require ALL variables -> group by file and check set inclusion
             file_ids = [r[0] for r in rows]
@@ -389,7 +392,7 @@ def query(
             for fid, var in cur.execute(f"SELECT file_id,var FROM records WHERE file_id IN ({qmarks})", file_ids):
                 var_map.setdefault(fid, set()).add(var)
             need = set(vars_list)
-            logging.info("[query] var_map=%s need=%s", var_map, need)
+            # logging.info("[query] var_map=%s need=%s", var_map, need)
             rows = [r for r in rows if var_map.get(r[0], set()).issuperset(need)]
 
         # de-dup by file id; convert to dict
@@ -466,7 +469,7 @@ def query_data(
         require_all=require_all,
         products=products,
     )
-    logging.info(f"Found {len(candidates)} candidates")
+    # logging.info(f"Found {len(candidates)} candidates")
     rows: List[dict] = []
     if not candidates:
         return rows
