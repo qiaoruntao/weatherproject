@@ -57,27 +57,13 @@ app = FastAPI(title="GRIB Index API", version="1.0.0")
 _basic = HTTPBasic()
 
 
-def _check_auth(credentials: HTTPBasicCredentials = Depends(_basic)) -> str:
-    user_expected = os.getenv("GRIB_API_USER", "weatherpreview")
-    pass_expected = os.getenv("GRIB_API_PASS", "afdsfdsfdsfsdfds")
-    ok_user = secrets.compare_digest(credentials.username, user_expected)
-    ok_pass = secrets.compare_digest(credentials.password, pass_expected)
-    if not (ok_user and ok_pass):
-        raise HTTPException(
-            status_code=HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
-
-
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}
 
 
 @app.post("/api/query")
-def api_query(payload: QueryPayload, _user: str = Depends(_check_auth)):
+def api_query(payload: QueryPayload):
     rows = query(
         db_path=payload.db_path,
         start_iso=payload.start_iso,
@@ -94,7 +80,7 @@ def api_query(payload: QueryPayload, _user: str = Depends(_check_auth)):
 
 
 @app.post("/api/query-data")
-def api_query_data(payload: DataQueryPayload, _user: str = Depends(_check_auth)):
+def api_query_data(payload: DataQueryPayload):
     print(payload)
     rows = query_data(
         start_iso=payload.start_iso,
