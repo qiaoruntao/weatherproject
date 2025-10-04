@@ -25,7 +25,7 @@ except Exception as e:
     sys.exit(2)
 
 from typing import Optional, List
-from grib_index import query, query_data  # uses your existing query() and query_data() functions
+from grib_index import query_data  # uses your existing query() and query_data() functions
 
 
 class QueryPayload(BaseModel):
@@ -59,23 +59,6 @@ app = FastAPI(title="GRIB Index API", version="1.0.0")
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}
-
-
-@app.post("/api/query")
-def api_query(payload: QueryPayload):
-    rows = query(
-        db_path=payload.db_path,
-        start_iso=payload.start_iso,
-        end_iso=payload.end_iso,
-        lon_min_0_360=payload.lon_min_0_360,
-        lon_max_0_360=payload.lon_max_0_360,
-        lat_min=payload.lat_min,
-        lat_max=payload.lat_max,
-        vars_any=payload.vars_any,
-        require_all=payload.require_all,
-        products=payload.products,
-    )
-    return {"count": len(rows), "results": rows}
 
 
 @app.post("/api/query-data")
