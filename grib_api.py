@@ -104,8 +104,10 @@ def main():
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")), help="Bind port (default: 8000)")
     parser.add_argument("--reload", action="store_true", help="Enable autoreload (dev only)")
     parser.add_argument("--log-level", default=os.getenv("LOG_LEVEL", "info"), help="Logging level for uvicorn")
-    parser.add_argument("--workers", type=int, default=int(os.getenv("WORKERS", "1")), help="Number of worker processes")
-    parser.add_argument("--proxy-headers", action="store_true", help="Use X-Forwarded-For and X-Forwarded-Proto headers")
+    parser.add_argument("--workers", type=int, default=int(os.getenv("WORKERS", "1")),
+                        help="Number of worker processes")
+    parser.add_argument("--proxy-headers", action="store_true",
+                        help="Use X-Forwarded-For and X-Forwarded-Proto headers")
 
     args = parser.parse_args()
 
