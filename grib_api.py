@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # Fail fast with a clear log if FastAPI stack is missing
 try:
     from fastapi import FastAPI, Depends, HTTPException
@@ -20,7 +21,6 @@ try:
     from pydantic import BaseModel, Field, validator
     import secrets
 except Exception as e:
-    logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
     logging.error("FastAPI stack not available: %s", e)
     sys.exit(2)
 
@@ -29,7 +29,6 @@ from grib_index import query, query_data  # uses your existing query() and query
 
 
 class QueryPayload(BaseModel):
-    db_path: str = Field(default="grib_index.sqlite", description="Path to the SQLite DB")
     start_iso: str = Field(..., description="Start time ISO, e.g. 2025-10-02T00:00:00Z")
     end_iso: str = Field(..., description="End time ISO")
     lon_min_0_360: float = Field(..., description="Longitude min in [0,360]")
@@ -96,8 +95,8 @@ def api_query(payload: QueryPayload, _user: str = Depends(_check_auth)):
 
 @app.post("/api/query-data")
 def api_query_data(payload: DataQueryPayload, _user: str = Depends(_check_auth)):
+    print(payload)
     rows = query_data(
-        db_path=payload.db_path,
         start_iso=payload.start_iso,
         end_iso=payload.end_iso,
         lon_min_0_360=payload.lon_min_0_360,
@@ -107,7 +106,6 @@ def api_query_data(payload: DataQueryPayload, _user: str = Depends(_check_auth))
         vars_any=payload.vars_any,
         require_all=payload.require_all,
         products=payload.products,
-        indexpath=payload.indexpath,
     )
     return {"count": len(rows), "results": rows}
 
@@ -140,7 +138,6 @@ def main():
     try:
         import uvicorn  # type: ignore
     except Exception as e:
-        logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
         logging.error("uvicorn is required to run the API via `python grib_api.py`: %s", e)
         sys.exit(2)
 
@@ -148,7 +145,7 @@ def main():
     workers = 1 if args.reload else max(1, args.workers)
 
     uvicorn.run(
-        "grib_api:app",
+        app,
         host=args.host,
         port=args.port,
         log_level=args.log_level,

@@ -7,6 +7,8 @@
 # Requires: python-eccodes  (pip/conda: 'eccodes')
 
 from __future__ import annotations
+
+import logging
 import os, sys, json, re, sqlite3, pathlib
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple, Set
@@ -22,6 +24,7 @@ import xarray as xr
 import numpy as np
 import pandas as pd
 import cfgrib  # for open_datasets across groups
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ===================== Utilities =====================
 
@@ -324,15 +327,26 @@ def query(
     Fast query in 0..360 lon space. Supports wrap (lon_min > lon_max) by
     running two sub-queries and unioning results.
     """
+    # Ensure DB exists before opening
+    if not os.path.exists(db_path):
+        logging.error("[query] SQLite DB not found: %s", db_path)
+        return []
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-
+    try:
+        cnt_files = cur.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        cnt_recs = cur.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+        cnt_rt = cur.execute("SELECT COUNT(*) FROM spatial_index").fetchone()[0]
+        logging.info("[query] counts files=%s records=%s spatial_index=%s db=%s",
+                     cnt_files, cnt_recs, cnt_rt, os.path.abspath(db_path))
+    except Exception as e:
+        logging.warning("[query] failed to read counts: %s", e)
     prods = tuple(p.lower() for p in products) if products else None
     vars_list = tuple(vars_any) if vars_any else None
+    logging.info("[query] counts prods=%s vars_list=%s vars_any=%s",prods,vars_list,vars_any)
 
     def _one_span(a: float, b: float) -> List[dict]:
         # R-Tree path
-        rows: List[tuple] = []
         base = """
                SELECT DISTINCT f.id,
                                f.path,
@@ -362,8 +376,9 @@ def query(
         if vars_list and not require_all:
             base += " AND r.var IN ({})".format(",".join("?" * len(vars_list)))
             params.extend(list(vars_list))
+        logging.info("[query] base=%s params=%s", base, params)
         rows = cur.execute(base, params).fetchall()
-
+        logging.info("[query] rows=%s", rows)
         if vars_list and require_all:
             # require ALL variables -> group by file and check set inclusion
             file_ids = [r[0] for r in rows]
@@ -374,6 +389,7 @@ def query(
             for fid, var in cur.execute(f"SELECT file_id,var FROM records WHERE file_id IN ({qmarks})", file_ids):
                 var_map.setdefault(fid, set()).add(var)
             need = set(vars_list)
+            logging.info("[query] var_map=%s need=%s", var_map, need)
             rows = [r for r in rows if var_map.get(r[0], set()).issuperset(need)]
 
         # de-dup by file id; convert to dict
@@ -397,7 +413,6 @@ def query(
             })
         return out
 
-    results: List[dict] = []
     if lon_min_0_360 <= lon_max_0_360:
         results = _one_span(lon_min_0_360, lon_max_0_360)
     else:
@@ -410,18 +425,16 @@ def query(
 
 # ===================== query_data: open/subset files with xarray/cfgrib =====================
 def query_data(
-    db_path: str,
-    start_iso: str,
-    end_iso: str,
-    lon_min_0_360: float,
-    lon_max_0_360: float,
-    lat_min: float,
-    lat_max: float,
-    vars_any: Optional[Iterable[str]] = None,   # match ANY of these variables
-    require_all: bool = False,                  # if True, require all listed variables
-    products: Optional[Iterable[str]] = None,   # e.g., ["flxf","ocnf"]
-    *,
-    indexpath: Optional[str] = "",              # default: keep indexes in memory (no .idx files)
+        start_iso: str,
+        end_iso: str,
+        lon_min_0_360: float,
+        lon_max_0_360: float,
+        lat_min: float,
+        lat_max: float,
+        vars_any: Optional[Iterable[str]] = None,  # match ANY of these variables
+        require_all: bool = False,  # if True, require all listed variables
+        products: Optional[Iterable[str]] = None,  # e.g., ["flxf","ocnf"]
+        db_path: str = "grib_index.sqlite",
 ) -> List[dict]:
     """
     Runs `query()` to find candidate files, opens each file, subsets by time/space/vars
@@ -453,7 +466,7 @@ def query_data(
         require_all=require_all,
         products=products,
     )
-
+    logging.info(f"Found {len(candidates)} candidates")
     rows: List[dict] = []
     if not candidates:
         return rows
@@ -583,7 +596,7 @@ def query_data(
         create_time = cand.get("cycle_time")
         try:
             # Open all groups for the GRIB file, then merge
-            ds_list = cfgrib.open_datasets(path, indexpath=indexpath)
+            ds_list = cfgrib.open_datasets(path)
             if not ds_list:
                 continue
             ds = xr.merge(ds_list, compat="override", join="outer")
@@ -630,7 +643,8 @@ def query_data(
                 had_time = False
                 for vt_iso, t_indexer in _iter_prediction_times(ds, da_sel):
                     had_time = True
-                    da_t = da_sel if t_indexer is None else da_sel.isel(**{k: v for k, v in (t_indexer or {}).items() if k in da_sel.dims})
+                    da_t = da_sel if t_indexer is None else da_sel.isel(
+                        **{k: v for k, v in (t_indexer or {}).items() if k in da_sel.dims})
                     # Reduce across remaining dims
                     try:
                         vmin = float(da_t.min(skipna=True).values)

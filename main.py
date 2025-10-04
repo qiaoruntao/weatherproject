@@ -1,24 +1,22 @@
 import xarray as xr
 import pandas as pd
 
-# Open dataset (adjust filters as needed)
+# Open dataset (load all variables)
 ds = xr.open_dataset(
     "data/cfs/flxf2025100218.01.2025100218.grb2",
     engine="cfgrib",
-    backend_kwargs={"filter_by_keys": {"typeOfLevel": "heightAboveGround", "level": 2}},
 )
 
 # Collect variable summaries
 records = []
 for var in ds.data_vars:
     attrs = ds[var].attrs
-    records.append({
-        "Variable": var,
-        "Short Name": attrs.get("GRIB_shortName", ""),
-        "Description": attrs.get("GRIB_name", ""),
-        "Units": attrs.get("units", "")
-    })
+    record = {"Variable": var}
+    record.update(attrs)
+    records.append(record)
 
 # Convert to DataFrame for nice display
-df = pd.DataFrame(records)
-print(df.to_string(index=False))
+df = pd.DataFrame.from_records(records)
+pd.set_option("display.max_columns", None)
+pd.set_option("display.width", 2000)
+print(df)
