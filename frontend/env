@@ -1,0 +1,19 @@
+# Google Maps API Key (Required)
+# Get your key from: https://console.cloud.google.com/
+NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=AIzaSyCZNy-8HXYFfPNHLJftsoJEo6UXI7OXan4
+
+# Backend API URL
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+
+# Use Mock Data (true/false)
+# Set to 'true' to use mock data when backend is not available
+NEXT_PUBLIC_USE_MOCK=true
+
+# GPT API Configuration (ChatAnywhere Free API)
+# API Key from https://github.com/chatanywhere/GPT_API_free
+NEXT_PUBLIC_GPT_API_KEY=sk-culzAxTddIqcn7IiU4vGUgbraDG5re4UHqEnYu22aD7VVm4j
+NEXT_PUBLIC_GPT_API_URL=https://api.chatanywhere.tech/v1/chat/completions
+
+# App Name (Optional)
+NEXT_PUBLIC_APP_NAME=Weather Data Management System
+
