@@ -54,7 +54,6 @@ class DataQueryPayload(QueryPayload):
 
 
 app = FastAPI(title="GRIB Index API", version="1.0.0")
-_basic = HTTPBasic()
 
 
 @app.get("/healthz")
