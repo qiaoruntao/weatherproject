@@ -381,7 +381,7 @@ def query(
             "variables": variables,
         })
     conn.close()
-    return result
+    return result[:1]
 
 
 # ===================== query_data: open/subset files with xarray/cfgrib =====================
