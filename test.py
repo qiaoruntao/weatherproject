@@ -6,7 +6,6 @@ rows = query_data(
     lon_min_0_360=80, lon_max_0_360=81,
     lat_min=80, lat_max=81,
     vars_any=["t2m", "prate"],  # optional
-    require_all=False,  # optional
     products=["flxf", "ocnf"],  # optional
 )
 
