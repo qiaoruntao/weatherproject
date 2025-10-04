@@ -65,8 +65,8 @@ def healthz() -> dict:
 def api_query_data(payload: DataQueryPayload):
     print(payload)
     rows = query_data(
-        start_iso=payload.start_iso,
-        end_iso=payload.end_iso,
+        start_iso=payload.start_iso.replace("Z", ""),
+        end_iso=payload.end_iso.replace("Z", ""),
         lon_min_0_360=payload.lon_min_0_360,
         lon_max_0_360=payload.lon_max_0_360,
         lat_min=payload.lat_min,
