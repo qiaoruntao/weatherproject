@@ -3,7 +3,7 @@
 #
 # Build + query a GRIB2 index optimized for 0..360 longitudes, with
 # one row per (file, variable) so you can filter directly by variable.
-#
+# python grib_index.py build data
 # Requires: python-eccodes  (pip/conda: 'eccodes')
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ from eccodes import (  # type: ignore
     codes_get, codes_get_long, codes_get_double,
     codes_release,
 )
+
+# Additional imports for data access/subsetting
+import xarray as xr
+import numpy as np
+import pandas as pd
+import cfgrib  # for open_datasets across groups
 
 # ===================== Utilities =====================
 
@@ -400,6 +406,273 @@ def query(
 
     conn.close()
     return results
+
+
+# ===================== query_data: open/subset files with xarray/cfgrib =====================
+def query_data(
+    db_path: str,
+    start_iso: str,
+    end_iso: str,
+    lon_min_0_360: float,
+    lon_max_0_360: float,
+    lat_min: float,
+    lat_max: float,
+    vars_any: Optional[Iterable[str]] = None,   # match ANY of these variables
+    require_all: bool = False,                  # if True, require all listed variables
+    products: Optional[Iterable[str]] = None,   # e.g., ["flxf","ocnf"]
+    *,
+    indexpath: Optional[str] = "",              # default: keep indexes in memory (no .idx files)
+) -> List[dict]:
+    """
+    Runs `query()` to find candidate files, opens each file, subsets by time/space/vars
+    and returns ONLY compact summaries per variable and prediction time:
+        {
+          'prediction_time': <ISO valid time>,
+          'create_time': <file cycle/init ISO>,
+          'type': <variable shortName>,
+          'value_min': <float>,
+          'value_max': <float>,
+          'path': <source file>  # included for traceability
+        }
+    Notes:
+      - Designed for CFS-style regular lat/lon grids with lon in 0..360.
+      - If lon_min_0_360 > lon_max_0_360, selection wraps across 360.
+      - Uses `cfgrib.open_datasets(..., indexpath=indexpath)` to read all groups.
+      - By default `indexpath=""` disables writing sidecar .idx files.
+    """
+    # First, shortlist files using the existing index
+    candidates = query(
+        db_path=db_path,
+        start_iso=start_iso,
+        end_iso=end_iso,
+        lon_min_0_360=lon_min_0_360,
+        lon_max_0_360=lon_max_0_360,
+        lat_min=lat_min,
+        lat_max=lat_max,
+        vars_any=vars_any,
+        require_all=require_all,
+        products=products,
+    )
+
+    rows: List[dict] = []
+    if not candidates:
+        return rows
+
+    # Helper to select indices respecting possible descending latitude
+    def _select_indices(ds: xr.Dataset, lat_min: float, lat_max: float,
+                        lon_min: float, lon_max: float) -> Tuple[np.ndarray, np.ndarray]:
+        # Get coordinate names (prefer 'latitude'/'longitude')
+        lat_name = "latitude" if "latitude" in ds.coords else ("lat" if "lat" in ds.coords else None)
+        lon_name = "longitude" if "longitude" in ds.coords else ("lon" if "lon" in ds.coords else None)
+        if lat_name is None or lon_name is None:
+            raise ValueError("Dataset lacks latitude/longitude coordinates")
+
+        lats = ds[lat_name].values
+        lons = ds[lon_name].values
+
+        # Ensure 1D coords
+        if lats.ndim != 1 or lons.ndim != 1:
+            # Some products may have 2D curvilinear coords; fall back to full domain
+            return np.arange(lats.shape[-1]), np.arange(lons.shape[-1])
+
+        # Latitude can be ascending or descending; construct mask based on values
+        lat_mask = (lats >= min(lat_min, lat_max)) & (lats <= max(lat_min, lat_max))
+        lat_idx = np.where(lat_mask)[0]
+
+        # Longitudes are 0..360; handle wrap
+        if lon_min <= lon_max:
+            lon_mask = (lons >= lon_min) & (lons <= lon_max)
+        else:
+            lon_mask = (lons >= lon_min) | (lons <= lon_max)
+        lon_idx = np.where(lon_mask)[0]
+        return lat_idx, lon_idx
+
+    # Time window parsing
+    q_start = pd.to_datetime(start_iso)
+    q_end = pd.to_datetime(end_iso)
+
+    def _subset_time(ds: xr.Dataset) -> xr.Dataset | None:
+        # Many CFS files have scalar time/valid_time. If a 1D time exists, slice it.
+        # Prefer 'valid_time', else attempt 'time' and 'step' composition.
+        if "valid_time" in ds.coords:
+            vt = ds["valid_time"]
+            if vt.ndim == 0:
+                ts = pd.to_datetime(vt.values)
+                if (ts >= q_start) and (ts <= q_end):
+                    return ds
+                return None
+            else:
+                vt_pd = pd.to_datetime(vt.values)
+                mask = (vt_pd >= q_start) & (vt_pd <= q_end)
+                if mask.any():
+                    return ds.isel({vt.dims[0]: np.where(mask)[0]})
+                return None
+        # Fallback: scalar 'time' +/- 'step'
+        if "time" in ds.coords:
+            base_t = pd.to_datetime(ds["time"].values)
+            if "step" in ds.coords:
+                st = ds["step"]
+                if st.ndim == 0:
+                    vt = base_t + pd.to_timedelta(st.values)
+                    return ds if (vt >= q_start) and (vt <= q_end) else None
+                else:
+                    vt_vals = base_t + pd.to_timedelta(st.values)
+                    mask = (vt_vals >= q_start) & (vt_vals <= q_end)
+                    if mask.any():
+                        return ds.isel({st.dims[0]: np.where(mask)[0]})
+                    return None
+            else:
+                return ds if (base_t >= q_start) and (base_t <= q_end) else None
+        # If no recognizable time, keep the dataset (query already filtered at file level)
+        return ds
+
+    def _iter_prediction_times(ds: xr.Dataset, da: xr.DataArray):
+        """
+        Yield tuples: (prediction_time_iso: str, indexer: dict or None)
+        indexer is used in .isel to select the time slice for this prediction time.
+        """
+        # 1) Prefer valid_time
+        if "valid_time" in ds.coords:
+            vt = ds["valid_time"]
+            if vt.ndim == 0:
+                yield (pd.to_datetime(vt.values).isoformat(), None)
+                return
+            # vt has a single dim, typically 'time' or 'step'
+            tdim = vt.dims[0]
+            # only iterate if the dataarray shares that dim
+            if tdim in da.dims:
+                vts = pd.to_datetime(vt.values)
+                for i in range(vt.sizes[tdim]):
+                    yield (pd.to_datetime(vts[i]).isoformat(), {tdim: i})
+                return
+            else:
+                # data does not vary in time; single summary with first vt
+                yield (pd.to_datetime(vt.values[0]).isoformat(), None)
+                return
+        # 2) Compose from time + step
+        if "time" in ds.coords:
+            base_t = pd.to_datetime(ds["time"].values)
+            if "step" in ds.coords:
+                st = ds["step"]
+                if st.ndim == 0:
+                    vt = base_t + pd.to_timedelta(st.values)
+                    yield (pd.to_datetime(vt).isoformat(), None)
+                    return
+                else:
+                    tdim = st.dims[0]
+                    if tdim in da.dims:
+                        steps = pd.to_timedelta(st.values)
+                        for i in range(st.sizes[tdim]):
+                            vt = base_t + steps[i]
+                            yield (pd.to_datetime(vt).isoformat(), {tdim: i})
+                        return
+            # fallback to plain 'time'
+            if np.ndim(ds["time"].values) == 0:
+                yield (pd.to_datetime(base_t).isoformat(), None)
+            else:
+                tdim = ds["time"].dims[0]
+                if tdim in da.dims:
+                    tvals = pd.to_datetime(ds["time"].values)
+                    for i in range(ds["time"].sizes[tdim]):
+                        yield (pd.to_datetime(tvals[i]).isoformat(), {tdim: i})
+                else:
+                    yield (pd.to_datetime(ds["time"].values[0]).isoformat(), None)
+
+    for cand in candidates:
+        path = cand["path"]
+        create_time = cand.get("cycle_time")
+        try:
+            # Open all groups for the GRIB file, then merge
+            ds_list = cfgrib.open_datasets(path, indexpath=indexpath)
+            if not ds_list:
+                continue
+            ds = xr.merge(ds_list, compat="override", join="outer")
+
+            # Subset time window (if applicable)
+            ds = _subset_time(ds)
+            if ds is None:
+                continue
+
+            # Spatial subset indices (computed once per file)
+            lat_idx, lon_idx = _select_indices(ds, lat_min, lat_max, lon_min_0_360, lon_max_0_360)
+            if lat_idx.size == 0 or lon_idx.size == 0:
+                continue
+
+            # Build indexers we can reuse
+            indexers = {}
+            if "latitude" in ds.dims:
+                indexers["latitude"] = lat_idx
+            elif "lat" in ds.dims:
+                indexers["lat"] = lat_idx
+            if "longitude" in ds.dims:
+                indexers["longitude"] = lon_idx
+            elif "lon" in ds.dims:
+                indexers["lon"] = lon_idx
+
+            # Limit to requested variables (if any)
+            var_names = list(ds.data_vars.keys())
+            if vars_any:
+                # ANY vs ALL logic: skip file if ALL requested but missing some
+                if require_all and not set(vars_any).issubset(var_names):
+                    continue
+                var_names = [v for v in var_names if v in set(vars_any)]
+
+            # For each variable, iterate prediction times and compute min/max over non-time dims
+            for v in var_names:
+                da = ds[v]
+                # Apply spatial subset where possible
+                da_sel = da
+                usable_indexers = {k: v for k, v in indexers.items() if k in da_sel.dims}
+                if usable_indexers:
+                    da_sel = da_sel.isel(**usable_indexers)
+
+                # Iterate times
+                had_time = False
+                for vt_iso, t_indexer in _iter_prediction_times(ds, da_sel):
+                    had_time = True
+                    da_t = da_sel if t_indexer is None else da_sel.isel(**{k: v for k, v in (t_indexer or {}).items() if k in da_sel.dims})
+                    # Reduce across remaining dims
+                    try:
+                        vmin = float(da_t.min(skipna=True).values)
+                        vmax = float(da_t.max(skipna=True).values)
+                    except Exception:
+                        # As a fallback, convert to numpy
+                        arr = np.asarray(da_t.values)
+                        vmin = float(np.nanmin(arr))
+                        vmax = float(np.nanmax(arr))
+                    rows.append({
+                        "prediction_time": vt_iso,
+                        "create_time": create_time,
+                        "type": v,
+                        "value_min": vmin,
+                        "value_max": vmax,
+                        "path": path,
+                    })
+                if not had_time:
+                    # No explicit time axis; treat as single prediction at file's time_start
+                    vt_iso = cand.get("time_start")
+                    try:
+                        vmin = float(da_sel.min(skipna=True).values)
+                        vmax = float(da_sel.max(skipna=True).values)
+                    except Exception:
+                        arr = np.asarray(da_sel.values)
+                        vmin = float(np.nanmin(arr))
+                        vmax = float(np.nanmax(arr))
+                    rows.append({
+                        "prediction_time": vt_iso,
+                        "create_time": create_time,
+                        "type": v,
+                        "value_min": vmin,
+                        "value_max": vmax,
+                        "path": path,
+                    })
+
+        except Exception as e:
+            # Skip problematic files but keep going
+            print(f"[WARN] query_data failed on {path}: {e}", file=sys.stderr)
+            continue
+
+    return rows
 
 
 # ===================== FastAPI service (moved) =====================
