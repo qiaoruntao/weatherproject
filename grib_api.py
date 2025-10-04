@@ -25,7 +25,7 @@ except Exception as e:
     sys.exit(2)
 
 from typing import Optional, List
-from grib_index import query  # uses your existing query() function
+from grib_index import query, query_data  # uses your existing query() and query_data() functions
 
 
 class QueryPayload(BaseModel):
@@ -45,6 +45,13 @@ class QueryPayload(BaseModel):
         if isinstance(v, str):
             return v.lower()
         return v
+
+
+class DataQueryPayload(QueryPayload):
+    indexpath: Optional[str] = Field(
+        default="",
+        description="cfgrib index path. Empty string disables sidecar .idx files."
+    )
 
 
 app = FastAPI(title="GRIB Index API", version="1.0.0")
@@ -83,6 +90,24 @@ def api_query(payload: QueryPayload, _user: str = Depends(_check_auth)):
         vars_any=payload.vars_any,
         require_all=payload.require_all,
         products=payload.products,
+    )
+    return {"count": len(rows), "results": rows}
+
+
+@app.post("/api/query-data")
+def api_query_data(payload: DataQueryPayload, _user: str = Depends(_check_auth)):
+    rows = query_data(
+        db_path=payload.db_path,
+        start_iso=payload.start_iso,
+        end_iso=payload.end_iso,
+        lon_min_0_360=payload.lon_min_0_360,
+        lon_max_0_360=payload.lon_max_0_360,
+        lat_min=payload.lat_min,
+        lat_max=payload.lat_max,
+        vars_any=payload.vars_any,
+        require_all=payload.require_all,
+        products=payload.products,
+        indexpath=payload.indexpath,
     )
     return {"count": len(rows), "results": rows}
 
