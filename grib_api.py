@@ -12,6 +12,8 @@ import logging
 import os
 import sys
 
+from starlette.middleware.cors import CORSMiddleware
+
 from query_file_index import query_func
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -48,6 +50,13 @@ class DataQueryPayload(QueryPayload):
 
 
 app = FastAPI(title="GRIB Index API", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_methods=['*'],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 
 
 @app.get("/healthz")

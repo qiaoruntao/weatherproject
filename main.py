@@ -1,7 +1,7 @@
 import cfgrib
 import pandas as pd
 
-datasets = cfgrib.open_datasets("data/cfs/ocnf2026040706.01.2025100312.grb2")
+datasets = cfgrib.open_datasets("data/cfs/flxf2025110500.01.2025100312.grb2")
 # Open dataset (load all variables)
 # ds = xr.open_dataset(
 #     "data/cfs/flxf2025100218.01.2025100218.grb2",
@@ -13,6 +13,8 @@ records = []
 for ds in datasets:
     for var in ds.data_vars:
         attrs = ds[var].attrs
+        if var in ["v10"]:
+            print(ds[var].values.shape)
         record = {"Variable": var}
         record.update(attrs)
         records.append(record)

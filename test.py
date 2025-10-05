@@ -1,4 +1,3 @@
-from grib_index import query_data
 from query_file_index import query_func
 
 #
@@ -15,6 +14,14 @@ from query_file_index import query_func
 
 # rows = query_func("2025-11-05T00:00:00", "2025-11-06T01:00:00", "heightAboveGround", "t2m", (80, 80, 85, 85))
 
-rows = query_func("2025-11-05T00:00:00Z", "2025-11-05T01:00:00Z", "heightAboveGround", "t2m", (80, 80, 85, 85))
-
+# 地面2米温度
+# rows = query_func("2025-11-05T00:00:00Z", "2025-11-05T01:00:00Z", "heightAboveGround", "t2m", (80, 80, 85, 85))
+# print(rows)
+# 积雪覆盖
+# rows = query_func("2025-11-05T00:00:00Z", "2025-11-05T01:00:00Z", "surface", "snowc", (80, 80, 85, 85))
+# print(rows)
+# 风速
+rows = query_func("2025-11-05T00:00:00Z", "2025-11-06T01:00:00Z", "hybrid", "u", (80, 80, 85, 85))
+print(rows)
+rows = query_func("2025-11-05T00:00:00Z", "2025-11-06T01:00:00Z", "hybrid", "v", (80, 80, 85, 85))
 print(rows)
