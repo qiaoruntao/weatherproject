@@ -184,27 +184,84 @@ export const VARIABLE_MAP: Record<string, string> = {
 
 /**
  * 将后端返回的结果转换为前端需要的格式
+ * 后端返回的数据格式：
+ * {
+ *   "count": 3,
+ *   "results": [
+ *     {
+ *       "prediction_time": "2025-10-04T00:00:00+00:00",
+ *       "create_time": "2025-10-03T12:00:00+00:00",
+ *       "type": "t2m",
+ *       "value_min": 289.84,
+ *       "value_max": 289.84,
+ *       "path": "data/cfs/flxf2025100400.01.2025100312.grb2"
+ *     }
+ *   ]
+ * }
  */
-export const transformQueryResults = (apiResponse: QueryDataResponse) => {
+export const transformQueryResults = (apiResponse: QueryDataResponse, coordinate?: { lat: number; lng: number }) => {
   const { count, results } = apiResponse
   
   // 提取唯一的文件路径
   const uniqueFiles = Array.from(new Set(results.map(r => r.path.split('/').pop() || r.path)))
   
-  // 转换为前端显示格式（兼容现有 ResultsPanel）
-  const dataPoints = results.map((item, index) => ({
-    lat: 43.65,  // 示例值，实际应从查询参数或结果中获取
-    lng: -79.38,
-    temperature: item.type === 't2m' ? item.value_max - 273.15 : 20,  // 转为摄氏度
-    windSpeed: item.type === 'u10' ? item.value_max : 10,
-    pressure: item.type === 'pres' ? item.value_max / 100 : 1013,  // 转为 hPa
-    humidity: item.type === 'rh' ? item.value_max : 60,
-    timestamp: item.prediction_time,
-    rawData: item  // 保留原始数据
+  // 按时间戳分组数据（同一时间的不同变量）
+  const groupedByTime = new Map<string, any>()
+  
+  results.forEach(item => {
+    const timestamp = item.prediction_time
+    if (!groupedByTime.has(timestamp)) {
+      groupedByTime.set(timestamp, {
+        timestamp,
+        lat: coordinate?.lat || 0,
+        lng: coordinate?.lng || 0,
+        temperature: null,
+        windSpeed: null,
+        pressure: null,
+        humidity: null,
+        rawData: []
+      })
+    }
+    
+    const point = groupedByTime.get(timestamp)!
+    point.rawData.push(item)
+    
+    // 根据变量类型填充数据
+    switch (item.type) {
+      case 't2m':
+        // 温度：开尔文转摄氏度
+        point.temperature = item.value_max - 273.15
+        break
+      case 'u10':
+      case 'v10':
+        // 风速：使用 value_max
+        point.windSpeed = item.value_max
+        break
+      case 'pres':
+        // 气压：Pa 转 hPa
+        point.pressure = item.value_max / 100
+        break
+      case 'rh':
+        // 湿度：百分比
+        point.humidity = item.value_max
+        break
+    }
+  })
+  
+  // 转换为数组并填充缺失值
+  const dataPoints = Array.from(groupedByTime.values()).map(point => ({
+    ...point,
+    temperature: point.temperature !== null ? point.temperature : 0,
+    windSpeed: point.windSpeed !== null ? point.windSpeed : 0,
+    pressure: point.pressure !== null ? point.pressure : 0,
+    humidity: point.humidity !== null ? point.humidity : 0
   }))
   
+  // 按时间排序
+  dataPoints.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+  
   return {
-    count,
+    count: dataPoints.length,
     files: uniqueFiles,
     data: dataPoints,
     rawResults: results

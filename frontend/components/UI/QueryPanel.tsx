@@ -80,11 +80,12 @@ export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinat
           'heightAboveGround'  // 使用真实后端的 level 值
         )
         
-        // 转换为前端格式
-        const results = transformQueryResults(apiResponse)
+        // 转换为前端格式（传递坐标信息）
+        const results = transformQueryResults(apiResponse, selectedCoordinate)
         
         console.log(`🔍 查询完成: 坐标(${selectedCoordinate.lat.toFixed(4)}, ${selectedCoordinate.lng.toFixed(4)}), 来源: ${selectedCoordinate.source}`)
-        console.log(`📊 结果: ${results.count} 条数据, ${results.files.length} 个文件`)
+        console.log(`📊 结果: ${results.count} 条数据点, ${results.files.length} 个文件`)
+        console.log(`📋 原始结果数: ${apiResponse.count} 条记录`)
         
         onQuerySubmit(results)
       }
