@@ -1,18 +1,19 @@
 # ---------------------------------------------
 # Utilities for query time handling and nearest-record query
-import logging
 import sqlite3
+from collections.abc import Sequence, Mapping
 from contextlib import closing
 from typing import Optional
 
 import numpy as np
-
-from grid_util import _to_utc_iso, GRIB_INDEX_SQLITE, _get_str_or_none, _compute_times_from_message, _get_int_or_none
 from eccodes import (  # type: ignore
     codes_grib_new_from_file,
-    codes_get, codes_get_long, codes_get_double,
+    codes_grib_get_data,
+    codes_get, codes_get_long,
     codes_release, codes_get_values
 )
+
+from grid_util import _to_utc_iso, GRIB_INDEX_SQLITE, _get_str_or_none, _get_int_or_none
 
 
 def _to_iso_str_or_passthrough(t) -> str:
@@ -53,9 +54,7 @@ def query_nearest_record(query_time, level_type: str, var: str) -> Optional[dict
           """
     with closing(sqlite3.connect(GRIB_INDEX_SQLITE)) as conn:
         conn.execute("PRAGMA busy_timeout=8000;")
-        params = (qt_iso, var, level_type)
-        logging.info("sql %s params %s", sql, params)
-        cur = conn.execute(sql, params)
+        cur = conn.execute(sql, (qt_iso, var, level_type))
         row = cur.fetchone()
         if not row:
             return None
@@ -121,7 +120,7 @@ def _subset_bbox_from_arrays(vals: np.ndarray, lats: np.ndarray, lons: np.ndarra
 
 
 def query_func(query_time, level_type: str, var: str,
-               bbox: tuple[float, float, float, float]) -> dict | None:
+               bbox: tuple[float, float, float, float]) -> list[dict]:
     """
     Use `query_nearest_record` to locate the best file for (var, level_type, query_time),
     then open that GRIB and extract the variable data inside `bbox`.
@@ -133,22 +132,24 @@ def query_func(query_time, level_type: str, var: str,
         bbox: (min_lat, min_lon, max_lat, max_lon)
 
     Returns:
-        dict with metadata and cropped arrays:
-          {
-            "file_path": str,
-            "forecast_time_utc": str,
-            "ref_time_utc": str,
-            "lead_hours": int,
-            "data": np.ndarray,   # 2D subset
-            "lat": np.ndarray,    # 2D subset
-            "lon": np.ndarray,    # 2D subset
-          }
-        or None if nothing matched.
+        List of dicts with all points inside the bbox:
+          [
+            {
+              "prediction_time": str,
+              "create_time": str,
+              "type": str,
+              "value_min": float,
+              "value_max": float,
+              "path": str,
+            },
+            ...
+          ]
+        Possibly empty list if nothing matched.
     """
     # 1) Find best record via DB
     rec = query_nearest_record(query_time, level_type, var)
     if not rec:
-        return None
+        return []
 
     fp = rec["file_path"]
     target_fcst_iso = rec["forecast_time_utc"]
@@ -162,26 +163,39 @@ def query_func(query_time, level_type: str, var: str,
             try:
                 if _msg_matches(h, var=var, level_type=level_type, target_forecast_iso=target_fcst_iso):
                     ny, nx = _grid_shape(h)
-                    # Pull values and lat/lon arrays
-                    vals = np.array(codes_get_values(h))
-                    lats = np.array(codes_get(h, "latitudes"))
-                    lons = np.array(codes_get(h, "longitudes"))
-                    # Some eccodes builds require explicit array getters:
-                    if not isinstance(lats, np.ndarray):
-                        # attempt to fetch via doubles array accessor
-                        lats = np.array(codes_get(h, "latitudes"))
-                        lons = np.array(codes_get(h, "longitudes"))
-                    data_sub, lat_sub, lon_sub = _subset_bbox_from_arrays(vals, lats, lons, bbox, ny, nx)
-                    return {
-                        "file_path": fp,
-                        "forecast_time_utc": rec["forecast_time_utc"],
-                        "ref_time_utc": rec["ref_time_utc"],
-                        "lead_hours": rec["lead_hours"],
-                        "data": data_sub,
-                        "lat": lat_sub,
-                        "lon": lon_sub,
-                    }
+                    # Best practice: pull lat/lon/values in one shot from ecCodes (fast, safe)
+                    # This avoids ArrayTooSmallError and works for regular & reduced grids.
+                    raw = codes_grib_get_data(h)
+                    if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
+                            and all(k in raw[0] for k in ("lat", "lon", "value"))):
+                        raise TypeError(
+                            "codes_grib_get_data() must return a sequence of {'lat','lon','value'} mappings")
+                    # Convert to arrays for fast masking
+                    npts = len(raw)
+                    lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
+                    lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
+                    vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
+                    min_lat, min_lon, max_lat, max_lon = bbox
+                    m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
+                    if not m.any():
+                        return []
+                    vt_iso = rec["forecast_time_utc"]
+                    create_time = rec["ref_time_utc"]
+                    path = fp
+                    v = var
+                    out = [
+                        {
+                            "prediction_time": vt_iso,
+                            "create_time": create_time,
+                            "type": v,
+                            "value_min": float(val),
+                            "value_max": float(val),
+                            "path": path,
+                        }
+                        for val in vals[m]
+                    ]
+                    return out
             finally:
                 codes_release(h)
     # If we reached here, no matching message was found in that file
-    return None
+    return []
