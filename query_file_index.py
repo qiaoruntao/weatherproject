@@ -62,6 +62,43 @@ def query_nearest_record(query_time, level_type: str, var: str) -> Optional[dict
         return dict(zip(cols, row))
 
 
+def query_records_in_range(start_time, end_time, level_type: str, var: str) -> list[dict]:
+    """
+    Return newest-by-ref_time entries for each forecast_time_utc within [start_time, end_time] (inclusive),
+    filtered by var and level_type, ordered by forecast_time_utc ASC.
+    """
+    start_iso = _to_iso_str_or_passthrough(start_time)
+    end_iso = _to_iso_str_or_passthrough(end_time)
+    sql = """
+          WITH ranked AS (SELECT id,
+                                 file_path,
+                                 var,
+                                 level_type,
+                                 ref_time_utc,
+                                 forecast_time_utc,
+                                 lead_hours,
+                                 ROW_NUMBER() OVER (
+          PARTITION BY var, level_type, forecast_time_utc
+          ORDER BY ref_time_utc DESC
+        ) AS rn
+                          FROM records
+                          WHERE var = ?
+                            AND level_type = ?
+                            AND forecast_time_utc >= ?
+                            AND forecast_time_utc <= ?)
+          SELECT id, file_path, var, level_type, ref_time_utc, forecast_time_utc, lead_hours
+          FROM ranked
+          WHERE rn = 1
+          ORDER BY forecast_time_utc ASC; \
+          """
+    with closing(sqlite3.connect(GRIB_INDEX_SQLITE)) as conn:
+        conn.execute("PRAGMA busy_timeout=8000;")
+        cur = conn.execute(sql, (var, level_type, start_iso, end_iso))
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
+
+
 def _msg_matches(h, *, var: str, level_type: str, target_forecast_iso: str) -> bool:
     """
     Check if a GRIB message matches shortName==var, typeOfLevel==level_type,
@@ -73,10 +110,6 @@ def _msg_matches(h, *, var: str, level_type: str, target_forecast_iso: str) -> b
         if short != var or tol != level_type:
             return False
         return True
-        # ref_dt, fcst_dt, _ = _compute_times_from_message(h)
-        # # Compare as ISO to hour precision
-        # t_iso = _to_utc_iso(fcst_dt)
-        # return t_iso[:13] == target_forecast_iso[:13]
     except Exception:
         return False
 
@@ -119,20 +152,21 @@ def _subset_bbox_from_arrays(vals: np.ndarray, lats: np.ndarray, lons: np.ndarra
     return vals2[y0:y1 + 1, x0:x1 + 1], lat2[y0:y1 + 1, x0:x1 + 1], lon2[y0:y1 + 1, x0:x1 + 1]
 
 
-def query_func(query_time, level_type: str, var: str,
+def query_func(start_query_time, end_query_time, level_type: str, var: str,
                bbox: tuple[float, float, float, float]) -> list[dict]:
     """
-    Use `query_nearest_record` to locate the best file for (var, level_type, query_time),
-    then open that GRIB and extract the variable data inside `bbox`.
+    For all forecasts within [start_query_time, end_query_time] (inclusive) for (var, level_type),
+    pick the newest record per forecast_time_utc, open its GRIB, and extract ALL points within `bbox`.
 
     Args:
-        query_time: datetime or ISO8601 string (UTC assumed if naive)
+        start_query_time: datetime or ISO8601 string (UTC assumed if naive)
+        end_query_time: datetime or ISO8601 string (UTC assumed if naive)
         level_type: e.g. 'surface'
         var: GRIB shortName, e.g. 'ishf'
         bbox: (min_lat, min_lon, max_lat, max_lon)
 
     Returns:
-        List of dicts with all points inside the bbox:
+        List of dicts with all points inside the bbox for all matching forecasts:
           [
             {
               "prediction_time": str,
@@ -146,56 +180,50 @@ def query_func(query_time, level_type: str, var: str,
           ]
         Possibly empty list if nothing matched.
     """
-    # 1) Find best record via DB
-    rec = query_nearest_record(query_time, level_type, var)
-    if not rec:
+    records = query_records_in_range(start_query_time, end_query_time, level_type, var)
+    if not records:
         return []
-
-    fp = rec["file_path"]
-    target_fcst_iso = rec["forecast_time_utc"]
-
-    # 2) Scan file and extract the matching grid
-    with open(fp, "rb") as f:
-        while True:
-            h = codes_grib_new_from_file(f)
-            if h is None:
-                break
-            try:
-                if _msg_matches(h, var=var, level_type=level_type, target_forecast_iso=target_fcst_iso):
-                    ny, nx = _grid_shape(h)
-                    # Best practice: pull lat/lon/values in one shot from ecCodes (fast, safe)
-                    # This avoids ArrayTooSmallError and works for regular & reduced grids.
-                    raw = codes_grib_get_data(h)
-                    if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
-                            and all(k in raw[0] for k in ("lat", "lon", "value"))):
-                        raise TypeError(
-                            "codes_grib_get_data() must return a sequence of {'lat','lon','value'} mappings")
-                    # Convert to arrays for fast masking
-                    npts = len(raw)
-                    lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
-                    lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
-                    vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
-                    min_lat, min_lon, max_lat, max_lon = bbox
-                    m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
-                    if not m.any():
-                        return []
-                    vt_iso = rec["forecast_time_utc"]
-                    create_time = rec["ref_time_utc"]
-                    path = fp
-                    v = var
-                    out = [
-                        {
-                            "prediction_time": vt_iso,
-                            "create_time": create_time,
-                            "type": v,
-                            "value_min": float(val),
-                            "value_max": float(val),
-                            "path": path,
-                        }
-                        for val in vals[m]
-                    ]
-                    return out
-            finally:
-                codes_release(h)
-    # If we reached here, no matching message was found in that file
-    return []
+    all_out: list[dict] = []
+    for rec in records:
+        fp = rec["file_path"]
+        target_fcst_iso = rec["forecast_time_utc"]
+        with open(fp, "rb") as f:
+            while True:
+                h = codes_grib_new_from_file(f)
+                if h is None:
+                    break
+                try:
+                    if _msg_matches(h, var=var, level_type=level_type, target_forecast_iso=target_fcst_iso):
+                        # Pull (lat, lon, value) triplets — dict sequence required
+                        raw = codes_grib_get_data(h)
+                        if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
+                                and all(k in raw[0] for k in ("lat", "lon", "value"))):
+                            raise TypeError(
+                                "codes_grib_get_data() must return a sequence of {'lat','lon','value'} mappings")
+                        npts = len(raw)
+                        lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
+                        lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
+                        vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
+                        min_lat, min_lon, max_lat, max_lon = bbox
+                        m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
+                        if m.any():
+                            vt_iso = rec["forecast_time_utc"]
+                            create_time = rec["ref_time_utc"]
+                            path = fp
+                            v = var
+                            all_out.extend(
+                                {
+                                    "prediction_time": vt_iso,
+                                    "create_time": create_time,
+                                    "type": v,
+                                    "value_min": float(val),
+                                    "value_max": float(val),
+                                    "path": path,
+                                }
+                                for val in vals[m]
+                            )
+                        break  # found the matching message in this file
+                finally:
+                    if 'h' in locals() and h is not None:
+                        codes_release(h)
+    return all_out
