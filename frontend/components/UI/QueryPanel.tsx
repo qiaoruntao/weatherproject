@@ -58,21 +58,27 @@ export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinat
       } else {
         // 使用真实后端 API
         console.log('🌐 使用真实后端 API')
-        const { queryWeatherData, transformQueryResults, VARIABLE_MAP } = await import('../../lib/api')
+        const { queryMultipleVariables, transformQueryResults, VARIABLE_MAP } = await import('../../lib/api')
         
-        // 转换变量名
+        // 转换变量名：前端显示名 -> 后端变量名
         const backendVars = selectedVars.map(v => VARIABLE_MAP[v] || v.toLowerCase())
         
         // 转换日期格式为 ISO
         const startISO = startDate ? `${startDate}T00:00:00Z` : undefined
         const endISO = endDate ? `${endDate}T23:59:59Z` : undefined
         
-        const apiResponse = await queryWeatherData({
-          coordinate: selectedCoordinate,
-          startTime: startISO,
-          endTime: endISO,
-          variables: backendVars
-        })
+        console.log(`📍 查询坐标: (${selectedCoordinate.lat.toFixed(4)}, ${selectedCoordinate.lng.toFixed(4)})`)
+        console.log(`📅 时间范围: ${startISO || '默认'} ~ ${endISO || '默认'}`)
+        console.log(`🔬 查询变量: ${backendVars.join(', ')}`)
+        
+        // 使用新的多变量查询函数（循环调用后端）
+        const apiResponse = await queryMultipleVariables(
+          selectedCoordinate,
+          startISO,
+          endISO,
+          backendVars,
+          'heightAboveGround'  // 使用真实后端的 level 值
+        )
         
         // 转换为前端格式
         const results = transformQueryResults(apiResponse)
