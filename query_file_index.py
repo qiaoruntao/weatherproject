@@ -8,6 +8,8 @@ from typing import Optional
 import sys
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+import os
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 import numpy as np
@@ -161,6 +163,35 @@ def _subset_bbox_from_arrays(vals: np.ndarray, lats: np.ndarray, lons: np.ndarra
     return vals2[y0:y1 + 1, x0:x1 + 1], lat2[y0:y1 + 1, x0:x1 + 1], lon2[y0:y1 + 1, x0:x1 + 1]
 
 
+@lru_cache(maxsize=40960)
+def _cached_grib_triplets(file_path: str, var: str, level_type: str):
+    """
+    Cache ecCodes triplets for (file_path, var, level_type).
+    Returns the raw result of codes_grib_get_data(h) for the *first* matching message.
+    Only supports the dict-sequence shape: [{'lat':..., 'lon':..., 'value':...}, ...].
+    """
+    # Normalize path so cache isn't split by relative vs absolute
+    fp = os.path.abspath(file_path)
+    with open(fp, "rb") as f:
+        while True:
+            h = codes_grib_new_from_file(f)
+            if h is None:
+                break
+            try:
+                if _msg_matches(h, var=var, level_type=level_type):
+                    raw = codes_grib_get_data(h)
+                    if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
+                            and all(k in raw[0] for k in ("lat", "lon", "value"))):
+                        raise TypeError(
+                            "codes_grib_get_data() must return a sequence of {'lat','lon','value'} mappings")
+                    return raw
+            finally:
+                if 'h' in locals() and h is not None:
+                    codes_release(h)
+    # No match found; cache the sentinel to avoid re-scanning repeatedly
+    return ()
+
+
 def _process_record_worker(rec: dict, var: str, level_type: str, bbox: tuple[float, float, float, float]) -> list[dict]:
     """
     Worker to extract all bbox points for a single record (newest per forecast) using ecCodes.
@@ -169,50 +200,37 @@ def _process_record_worker(rec: dict, var: str, level_type: str, bbox: tuple[flo
     fp = rec["file_path"]
     out: list[dict] = []
     try:
-        with open(fp, "rb") as f:
-            while True:
-                h = codes_grib_new_from_file(f)
-                if h is None:
-                    break
-                try:
-                    if _msg_matches(h, var=var, level_type=level_type):
-                        raw = codes_grib_get_data(h)
-                        if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
-                                and all(k in raw[0] for k in ("lat", "lon", "value"))):
-                            # Skip unsupported return types in worker (query_func enforces Case 1)
-                            break
-                        npts = len(raw)
-                        lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
-                        lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
-                        vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
-                        min_lat, min_lon, max_lat, max_lon = bbox
-                        m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
-                        if m.any():
-                            vt_iso = rec["forecast_time_utc"]
-                            create_time = rec["ref_time_utc"]
-                            path = fp
-                            sel_vals = vals[m]
-                            sel_lats = lats[m]
-                            sel_lons = lons[m]
-                            out.extend(
-                                {
-                                    "prediction_time": vt_iso,
-                                    "create_time": create_time,
-                                    "type": var,
-                                    "level": level_type,
-                                    "json_key": var + '_' + level_type,
-                                    "value_min": float(val),
-                                    "value_max": float(val),
-                                    "path": path,
-                                    "lat": float(la),
-                                    "lon": float(lo),
-                                }
-                                for val, la, lo in zip(sel_vals, sel_lats, sel_lons)
-                            )
-                        break  # found the matching message in this file
-                finally:
-                    if 'h' in locals() and h is not None:
-                        codes_release(h)
+        raw = _cached_grib_triplets(fp, var, level_type)
+        if not raw:
+            return out
+        npts = len(raw)
+        lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
+        lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
+        vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
+        min_lat, min_lon, max_lat, max_lon = bbox
+        m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
+        if m.any():
+            vt_iso = rec["forecast_time_utc"]
+            create_time = rec["ref_time_utc"]
+            path = fp
+            sel_vals = vals[m]
+            sel_lats = lats[m]
+            sel_lons = lons[m]
+            out.extend(
+                {
+                    "prediction_time": vt_iso,
+                    "create_time": create_time,
+                    "type": var,
+                    "level": level_type,
+                    "json_key": var + '_' + level_type,
+                    "value_min": float(val),
+                    "value_max": float(val),
+                    "path": path,
+                    "lat": float(la),
+                    "lon": float(lo),
+                }
+                for val, la, lo in zip(sel_vals, sel_lats, sel_lons)
+            )
     except Exception as e:
         # Return empty list on error; main process can log if needed
         logging.warning("Worker failed for %s: %s", fp, e)
@@ -295,6 +313,7 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
                     except Exception as e:
                         logging.warning("Extraction future failed: %s", e)
             ran = True
+            logging.info("query_func using ProcessPoolExecutor with %d workers", max_workers)
         except RuntimeError as e:
             logging.warning("Process pool spawn failed (%s). Falling back to threads.", e)
         except Exception as e:
@@ -302,5 +321,6 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
     if not ran:
         # Thread fallback – ecCodes is C-heavy and releases the GIL on IO/decoding so this still scales.
         all_out = _run_with_executor(ThreadPoolExecutor)
+        logging.info("query_func using ThreadPoolExecutor with %d workers", max_workers)
 
     return all_out

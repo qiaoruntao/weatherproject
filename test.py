@@ -1,3 +1,7 @@
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
 from query_file_index import query_func
 
 #
@@ -23,8 +27,10 @@ from query_file_index import query_func
 # 风速
 # rows = query_func("2025-11-05T00:00:00Z", "2025-11-06T01:00:00Z", "hybrid", "u", (80, 80, 85, 85))
 # rows = query_func("2025-11-05T00:00:00Z", "2025-11-06T01:00:00Z", "heightAboveGround", "u10", (80, 80, 85, 85))
-rows = query_func("2025-11-05T00:00:00Z", "2025-11-26T01:00:00Z", 'atmosphereSingleLayer', 'tcc', (80, 80, 85, 85))
-print(rows)
+rows = query_func("2025-11-05T00:00:00Z", "2025-11-26T01:00:00Z", "surface", "cpr", (80, 80, 85, 85))
+logging.info(len(rows))
+rows = query_func("2025-11-05T00:00:00Z", "2025-11-26T01:00:00Z", "surface", "cpr", (80, 80, 85, 85))
+logging.info(len(rows))
 # rows = query_func("2025-11-05T00:00:00Z", "2025-11-06T01:00:00Z", "hybrid", "v", (80, 80, 85, 85))
 # print(rows)
 #
