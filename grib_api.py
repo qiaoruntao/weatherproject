@@ -12,6 +12,8 @@ import logging
 import os
 import sys
 
+from query_file_index import query_func
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # Fail fast with a clear log if FastAPI stack is missing
 try:
@@ -24,8 +26,7 @@ except Exception as e:
     logging.error("FastAPI stack not available: %s", e)
     sys.exit(2)
 
-from typing import Optional, List
-from grib_index import query, query_data  # uses your existing query() and query_data() functions
+from typing import Optional
 
 
 class QueryPayload(BaseModel):
@@ -35,15 +36,8 @@ class QueryPayload(BaseModel):
     lon_max_0_360: float = Field(..., description="Longitude max in [0,360] (can be less than min to wrap)")
     lat_min: float
     lat_max: float
-    vars_any: Optional[List[str]] = Field(default=None, description="Match ANY of these variable shortNames")
-    require_all: bool = Field(default=False, description="If true, require ALL listed variables")
-    products: Optional[List[str]] = Field(default=None, description="Filter by product ids, e.g. ['flxf','ocnf']")
-
-    @validator("products", each_item=True, pre=True)
-    def _lower_products(cls, v):
-        if isinstance(v, str):
-            return v.lower()
-        return v
+    level: str
+    variable: str
 
 
 class DataQueryPayload(QueryPayload):
@@ -64,16 +58,8 @@ def healthz() -> dict:
 @app.post("/api/query-data")
 def api_query_data(payload: DataQueryPayload):
     print(payload)
-    rows = query_data(
-        start_iso=payload.start_iso.replace("Z", ""),
-        end_iso=payload.end_iso.replace("Z", ""),
-        lon_min_0_360=payload.lon_min_0_360,
-        lon_max_0_360=payload.lon_max_0_360,
-        lat_min=payload.lat_min,
-        lat_max=payload.lat_max,
-        vars_any=payload.vars_any,
-        products=payload.products,
-    )
+    rows = query_func(payload.start_iso, payload.end_iso, payload.level, payload.variable,
+                      (payload.lat_min, payload.lon_min_0_360, payload.lat_max, payload.lon_max_0_360))
     return {"count": len(rows), "results": rows}
 
 
