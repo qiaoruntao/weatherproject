@@ -179,6 +179,8 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
               "value_min": float,
               "value_max": float,
               "path": str,
+              "lat": float,
+              "lon": float,
             },
             ...
           ]
@@ -215,6 +217,9 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
                             create_time = rec["ref_time_utc"]
                             path = fp
                             v = var
+                            sel_vals = vals[m]
+                            sel_lats = lats[m]
+                            sel_lons = lons[m]
                             all_out.extend(
                                 {
                                     "prediction_time": vt_iso,
@@ -223,8 +228,10 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
                                     "value_min": float(val),
                                     "value_max": float(val),
                                     "path": path,
+                                    "lat": float(la),
+                                    "lon": float(lo),
                                 }
-                                for val in vals[m]
+                                for val, la, lo in zip(sel_vals, sel_lats, sel_lons)
                             )
                         break  # found the matching message in this file
                 finally:
