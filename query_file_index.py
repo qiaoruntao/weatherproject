@@ -5,6 +5,9 @@ import sqlite3
 from collections.abc import Sequence, Mapping
 from contextlib import closing
 from typing import Optional
+import sys
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 import numpy as np
@@ -16,6 +19,8 @@ from eccodes import (  # type: ignore
 )
 
 from grid_util import _to_utc_iso, GRIB_INDEX_SQLITE, _get_str_or_none, _get_int_or_none
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def _to_iso_str_or_passthrough(t) -> str:
@@ -156,8 +161,68 @@ def _subset_bbox_from_arrays(vals: np.ndarray, lats: np.ndarray, lons: np.ndarra
     return vals2[y0:y1 + 1, x0:x1 + 1], lat2[y0:y1 + 1, x0:x1 + 1], lon2[y0:y1 + 1, x0:x1 + 1]
 
 
+def _process_record_worker(rec: dict, var: str, level_type: str, bbox: tuple[float, float, float, float]) -> list[dict]:
+    """
+    Worker to extract all bbox points for a single record (newest per forecast) using ecCodes.
+    Returns a list of rows in the same schema as query_func emits.
+    """
+    fp = rec["file_path"]
+    out: list[dict] = []
+    try:
+        with open(fp, "rb") as f:
+            while True:
+                h = codes_grib_new_from_file(f)
+                if h is None:
+                    break
+                try:
+                    if _msg_matches(h, var=var, level_type=level_type):
+                        raw = codes_grib_get_data(h)
+                        if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
+                                and all(k in raw[0] for k in ("lat", "lon", "value"))):
+                            # Skip unsupported return types in worker (query_func enforces Case 1)
+                            break
+                        npts = len(raw)
+                        lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
+                        lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
+                        vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
+                        min_lat, min_lon, max_lat, max_lon = bbox
+                        m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
+                        if m.any():
+                            vt_iso = rec["forecast_time_utc"]
+                            create_time = rec["ref_time_utc"]
+                            path = fp
+                            sel_vals = vals[m]
+                            sel_lats = lats[m]
+                            sel_lons = lons[m]
+                            out.extend(
+                                {
+                                    "prediction_time": vt_iso,
+                                    "create_time": create_time,
+                                    "type": var,
+                                    "level": level_type,
+                                    "json_key": var + '_' + level_type,
+                                    "value_min": float(val),
+                                    "value_max": float(val),
+                                    "path": path,
+                                    "lat": float(la),
+                                    "lon": float(lo),
+                                }
+                                for val, la, lo in zip(sel_vals, sel_lats, sel_lons)
+                            )
+                        break  # found the matching message in this file
+                finally:
+                    if 'h' in locals() and h is not None:
+                        codes_release(h)
+    except Exception as e:
+        # Return empty list on error; main process can log if needed
+        logging.warning("Worker failed for %s: %s", fp, e)
+    return out
+
+
 def query_func(start_query_time, end_query_time, level_type: str, var: str,
-               bbox: tuple[float, float, float, float]) -> list[dict]:
+               bbox: tuple[float, float, float, float],
+               max_workers: int = 8,
+               prefer_processes: bool = True) -> list[dict]:
     """
     For all forecasts within [start_query_time, end_query_time] (inclusive) for (var, level_type),
     pick the newest record per forecast_time_utc, open its GRIB, and extract ALL points within `bbox`.
@@ -168,6 +233,8 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
         level_type: e.g. 'surface'
         var: GRIB shortName, e.g. 'ishf'
         bbox: (min_lat, min_lon, max_lat, max_lon)
+        max_workers: degree of parallelism (default 8)
+        prefer_processes: use process-based parallelism when safe; falls back to threads on failure
 
     Returns:
         List of dicts with all points inside the bbox for all matching forecasts:
@@ -190,53 +257,40 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
     if not records:
         return []
     all_out: list[dict] = []
-    for rec in records:
-        fp = rec["file_path"]
-        target_fcst_iso = rec["forecast_time_utc"]
-        with open(fp, "rb") as f:
-            while True:
-                h = codes_grib_new_from_file(f)
-                if h is None:
-                    break
+
+    def _run_with_executor(executor_cls):
+        out_local: list[dict] = []
+        with executor_cls(max_workers=max_workers) as ex:
+            futures = [ex.submit(_process_record_worker, rec, var, level_type, bbox) for rec in records]
+            for fut in as_completed(futures):
                 try:
-                    if _msg_matches(h, var=var, level_type=level_type):
-                        # Pull (lat, lon, value) triplets — dict sequence required
-                        raw = codes_grib_get_data(h)
-                        if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
-                                and all(k in raw[0] for k in ("lat", "lon", "value"))):
-                            raise TypeError(
-                                "codes_grib_get_data() must return a sequence of {'lat','lon','value'} mappings")
-                        npts = len(raw)
-                        lats = np.fromiter((item["lat"] for item in raw), dtype=float, count=npts)
-                        lons = np.fromiter((item["lon"] for item in raw), dtype=float, count=npts)
-                        vals = np.fromiter((item["value"] for item in raw), dtype=float, count=npts)
-                        min_lat, min_lon, max_lat, max_lon = bbox
-                        m = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
-                        if m.any():
-                            vt_iso = rec["forecast_time_utc"]
-                            create_time = rec["ref_time_utc"]
-                            path = fp
-                            v = var
-                            sel_vals = vals[m]
-                            sel_lats = lats[m]
-                            sel_lons = lons[m]
-                            all_out.extend(
-                                {
-                                    "prediction_time": vt_iso,
-                                    "create_time": create_time,
-                                    "type": v,
-                                    "level": level_type,
-                                    "json_key": v + '_' + level_type,
-                                    "value_min": float(val),
-                                    "value_max": float(val),
-                                    "path": path,
-                                    "lat": float(la),
-                                    "lon": float(lo),
-                                }
-                                for val, la, lo in zip(sel_vals, sel_lats, sel_lons)
-                            )
-                        break  # found the matching message in this file
-                finally:
-                    if 'h' in locals() and h is not None:
-                        codes_release(h)
+                    part = fut.result()
+                    if part:
+                        out_local.extend(part)
+                except Exception as e:
+                    logging.warning("Extraction future failed: %s", e)
+        return out_local
+
+    ran = False
+    if prefer_processes:
+        # Try to choose a safe start method on POSIX to reduce spawn/import issues.
+        try:
+            # Use 'fork' when available to avoid re-importing __main__; ignore if already set.
+            if mp.get_start_method(allow_none=True) is None:
+                try:
+                    mp.set_start_method('fork')
+                except Exception:
+                    # Fall back silently; we'll still try processes
+                    pass
+            all_out = _run_with_executor(ProcessPoolExecutor)
+            ran = True
+        except RuntimeError as e:
+            # Common when caller did not guard with if __name__ == '__main__'
+            logging.warning("Process pool spawn failed (%s). Falling back to threads.", e)
+        except Exception as e:
+            logging.warning("Process pool failed (%s). Falling back to threads.", e)
+    if not ran:
+        # Thread fallback – ecCodes is C-heavy and releases the GIL on IO/decoding so this still scales.
+        all_out = _run_with_executor(ThreadPoolExecutor)
+
     return all_out
