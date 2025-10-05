@@ -219,6 +219,15 @@ def _process_record_worker(rec: dict, var: str, level_type: str, bbox: tuple[flo
     return out
 
 
+def _get_mp_context(prefer: str = 'fork'):
+    """Return a multiprocessing context, preferring 'fork' when available on POSIX.
+    Falls back to default context otherwise."""
+    try:
+        return mp.get_context(prefer)
+    except Exception:
+        return mp.get_context()
+
+
 def query_func(start_query_time, end_query_time, level_type: str, var: str,
                bbox: tuple[float, float, float, float],
                max_workers: int = 8,
@@ -275,17 +284,18 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
     if prefer_processes:
         # Try to choose a safe start method on POSIX to reduce spawn/import issues.
         try:
-            # Use 'fork' when available to avoid re-importing __main__; ignore if already set.
-            if mp.get_start_method(allow_none=True) is None:
-                try:
-                    mp.set_start_method('fork')
-                except Exception:
-                    # Fall back silently; we'll still try processes
-                    pass
-            all_out = _run_with_executor(ProcessPoolExecutor)
+            ctx = _get_mp_context('fork') if sys.platform != 'win32' else _get_mp_context()
+            with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as ex:
+                futures = [ex.submit(_process_record_worker, rec, var, level_type, bbox) for rec in records]
+                for fut in as_completed(futures):
+                    try:
+                        part = fut.result()
+                        if part:
+                            all_out.extend(part)
+                    except Exception as e:
+                        logging.warning("Extraction future failed: %s", e)
             ran = True
         except RuntimeError as e:
-            # Common when caller did not guard with if __name__ == '__main__'
             logging.warning("Process pool spawn failed (%s). Falling back to threads.", e)
         except Exception as e:
             logging.warning("Process pool failed (%s). Falling back to threads.", e)
