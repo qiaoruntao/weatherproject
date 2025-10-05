@@ -52,7 +52,8 @@ class DataQueryPayload(QueryPayload):
 app = FastAPI(title="GRIB Index API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*']
+    allow_origins=['*'],
+    allow_methods=['*']
 )
 
 
