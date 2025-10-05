@@ -110,7 +110,7 @@ def _msg_matches(h, *, var: str, level_type: str) -> bool:
         var_name = _get_str_or_none(h, "cfVarName")
         short = _get_str_or_none(h, "shortName")
         tol = _get_str_or_none(h, "typeOfLevel")
-        logging.info("var=%s, level_type=%s, short=%s" % (var_name, tol, short))
+        # logging.info("var=%s, level_type=%s, short=%s" % (var_name, tol, short))
         if (var_name != var and short != var) or tol != level_type:
             return False
         return True
