@@ -59,33 +59,28 @@ export default function ResultsPanel({ results, onPointClick }: ResultsPanelProp
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
                   <span className="text-gray-400">Lat:</span>
-                  <span className="text-blue-400 ml-1 font-mono">{point.lat.toFixed(4)}</span>
+                  <span className="text-blue-400 ml-1 font-mono">{point.lat?.toFixed(4) || 'N/A'}</span>
                 </div>
                 <div>
                   <span className="text-gray-400">Lng:</span>
-                  <span className="text-purple-400 ml-1 font-mono">{point.lng.toFixed(4)}</span>
+                  <span className="text-purple-400 ml-1 font-mono">{point.lng?.toFixed(4) || 'N/A'}</span>
                 </div>
               </div>
 
               {expandedIndex === index && (
                 <div className="mt-3 pt-3 border-t border-white/10 space-y-2 animate-fade-in">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-gray-400">🌡️ Temperature</span>
-                    <span className="text-white font-mono">{point.temperature.toFixed(1)}°C</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-gray-400">💨 Wind Speed</span>
-                    <span className="text-white font-mono">{point.windSpeed.toFixed(1)} m/s</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-gray-400">🎚️ Pressure</span>
-                    <span className="text-white font-mono">{point.pressure.toFixed(1)} hPa</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-gray-400">💧 Humidity</span>
-                    <span className="text-white font-mono">{point.humidity.toFixed(1)}%</span>
-                  </div>
-                  <div className="text-xs text-gray-500 mt-2">
+                  {/* 动态显示所有实际存在的变量 */}
+                  {point.rawData && point.rawData.map((item: any, idx: number) => (
+                    <div key={idx} className="flex justify-between text-xs">
+                      <span className="text-gray-400">
+                        {item.displayName || item.type}
+                      </span>
+                      <span className="text-white font-mono">
+                        {item.displayValue || item.value_max?.toFixed(3) || 'N/A'}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="text-xs text-gray-500 mt-2 pt-2 border-t border-white/5">
                     {new Date(point.timestamp).toLocaleString()}
                   </div>
                 </div>

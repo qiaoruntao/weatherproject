@@ -39,9 +39,13 @@ export interface QueryDataResponse {
     prediction_time: string
     create_time: string
     type: string
+    level: string         // 层级类型（如 heightAboveGround）
+    json_key: string      // 完整的变量键名（如 t2m_heightAboveGround）
     value_min: number
     value_max: number
     path: string
+    lat: number           // 真实数据点的纬度
+    lon: number           // 真实数据点的经度（0~360）
   }>
 }
 
@@ -53,13 +57,13 @@ export interface QueryDataResponse {
 export const queryWeatherData = async (params: QueryDataParams): Promise<QueryDataResponse> => {
   const { coordinate, startTime, endTime, variable, level } = params
   
-  // 计算查询区域：以坐标为中心，±0.5度范围
+  // 计算查询区域：以坐标为中心，±1度范围（1°×1° 区域）
   const lat = coordinate.lat
   const lng = coordinate.lng
-  const lat_min = lat - 0.5
-  const lat_max = lat + 0.5
-  const lon_min_0_360 = lonTo0_360(lng - 0.5)
-  const lon_max_0_360 = lonTo0_360(lng + 0.5)
+  const lat_min = lat - 1.0
+  const lat_max = lat + 1.0
+  const lon_min_0_360 = lonTo0_360(lng - 1.0)
+  const lon_max_0_360 = lonTo0_360(lng + 1.0)
   
   // 构建后端需要的payload（严格匹配 DataQueryPayload）
   // 默认使用今天的日期
@@ -177,9 +181,107 @@ export const healthCheck = async (): Promise<boolean> => {
  */
 export const VARIABLE_MAP: Record<string, string> = {
   'Temperature': 't2m',
-  'Wind': 'u10',  // 可以查询 u10 和 v10
+  'Wind': 'u10',
   'Pressure': 'pres',
   'Humidity': 'rh'
+}
+
+/**
+ * 完整的变量名称映射表（type_level -> 显示名称）
+ * 来自后端 GRIB 数据定义
+ */
+export const VARIABLE_DISPLAY_NAMES: Record<string, string> = {
+  "pwat_atmosphereSingleLayer": "Precipitable water",
+  "tcc_atmosphereSingleLayer": "Cloud Coverage",
+  "cwork_atmosphereSingleLayer": "Cloud work function",
+  "tcc_boundaryLayerCloudLayer": "Total Cloud Cover",
+  "tcc_convectiveCloudLayer": "Total Cloud Cover",
+  "t_depthBelowLandLayer": "Temperature",
+  "soilw_depthBelowLandLayer": "Volumetric soil moisture content",
+  "soill_depthBelowLandLayer": "Liquid volumetric soil moisture (non-frozen)",
+  "ssw_depthBelowLandLayer": "Soil moisture content",
+  "u10_heightAboveGround": "Wind Speed",
+  "v10_heightAboveGround": "10 metre V wind component",
+  "t2m_heightAboveGround": "Temperature",
+  "tmax_heightAboveGround": "Maximum temperature",
+  "tmin_heightAboveGround": "Minimum temperature",
+  "sh2_heightAboveGround": "2 metre specific humidity",
+  "qmax_heightAboveGround": "Maximum specific humidity at 2m",
+  "qmin_heightAboveGround": "Minimum specific humidity at 2m",
+  "pres_highCloudBottom": "Pressure",
+  "tcc_highCloudLayer": "Total Cloud Cover",
+  "pres_highCloudTop": "Pressure",
+  "t_highCloudTop": "Temperature",
+  "t_hybrid": "Temperature",
+  "u_hybrid": "U component of wind",
+  "v_hybrid": "V component of wind",
+  "q_hybrid": "Specific humidity",
+  "gh_hybrid": "Geopotential height",
+  "pres_lowCloudBottom": "Pressure",
+  "tcc_lowCloudLayer": "Total Cloud Cover",
+  "pres_lowCloudTop": "Pressure",
+  "t_lowCloudTop": "Temperature",
+  "pres_middleCloudBottom": "Pressure",
+  "tcc_middleCloudLayer": "Total Cloud Cover",
+  "pres_middleCloudTop": "Pressure",
+  "t_middleCloudTop": "Temperature",
+  "sdswrf_nominalTop": "Surface downward short-wave radiation flux",
+  "suswrf_nominalTop": "Surface upward short-wave radiation flux",
+  "sulwrf_nominalTop": "Surface upward long-wave radiation flux",
+  "csusf_nominalTop": "Clear Sky Upward Solar Flux",
+  "csulf_nominalTop": "Clear Sky Upward Long Wave Flux",
+  "unknown_surface": "unknown",
+  "siconc_surface": "Sea ice area fraction",
+  "slt_surface": "Soil type",
+  "t_surface": "Temperature",
+  "sp_surface": "Surface pressure",
+  "lsm_surface": "Land-sea mask",
+  "ishf_surface": "Instantaneous surface sensible heat net flux",
+  "fsr_surface": "Forecast surface roughness",
+  "prate_surface": "Precipitation rate",
+  "sde_surface": "Snow depth",
+  "utaua_surface": "U-component of atmospheric surface momentum flux",
+  "vtaua_surface": "V-component of atmospheric surface momentum flux",
+  "orog_surface": "Orography",
+  "slhtf_surface": "Surface latent heat net flux",
+  "snohf_surface": "Snow phase change heat flux",
+  "srweq_surface": "Snowfall rate water equivalent",
+  "crain_surface": "Categorical rain",
+  "cpr_surface": "Precipitation",
+  "snowc_surface": "Snow Coverage",
+  "sdwe_surface": "Water equivalent of accumulated snow depth (deprecated)",
+  "fricv_surface": "Frictional velocity",
+  "iegwss_surface": "Instantaneous eastward gravity wave surface stress",
+  "ingwss_surface": "Instantaneous northward gravity wave surface stress",
+  "sdswrf_surface": "Surface downward short-wave radiation flux",
+  "suswrf_surface": "Surface upward short-wave radiation flux",
+  "sdlwrf_surface": "Surface downward long-wave radiation flux",
+  "sulwrf_surface": "Surface upward long-wave radiation flux",
+  "ssrun_surface": "Storm surface runoff",
+  "veg_surface": "Vegetation",
+  "watr_surface": "Water runoff",
+  "gflux_surface": "Ground heat flux",
+  "sfexc_surface": "Exchange coefficient",
+  "cnwat_surface": "Plant canopy surface water",
+  "sbsno_surface": "Sublimation (evaporation from snow)",
+  "duvb_surface": "UV-B downward solar flux",
+  "cduvb_surface": "Clear sky UV-B downward solar flux",
+  "csdsf_surface": "Clear Sky Downward Solar Flux",
+  "csusf_surface": "Clear Sky Upward Solar Flux",
+  "vbdsf_surface": "Visible Beam Downward Solar Flux",
+  "vddsf_surface": "Visible Diffuse Downward Solar Flux",
+  "nbdsf_surface": "Near IR Beam Downward Solar Flux",
+  "nddsf_surface": "Near IR Diffuse Downward Solar Flux",
+  "csulf_surface": "Clear Sky Upward Long Wave Flux",
+  "csdlf_surface": "Clear Sky Downward Long Wave Flux",
+  "vgtyp_surface": "Vegetation Type",
+  "acond_surface": "Aerodynamic conductance",
+  "evcw_surface": "Canopy water evaporation",
+  "trans_surface": "Transpiration",
+  "sltyp_surface": "Surface Slope Type",
+  "evbs_surface": "Direct evaporation from bare soil",
+  "al_surface": "Forecast albedo",
+  "sithick_surface": "Sea ice thickness"
 }
 
 /**
@@ -194,7 +296,9 @@ export const VARIABLE_MAP: Record<string, string> = {
  *       "type": "t2m",
  *       "value_min": 289.84,
  *       "value_max": 289.84,
- *       "path": "data/cfs/flxf2025100400.01.2025100312.grb2"
+ *       "path": "data/cfs/flxf2025100400.01.2025100312.grb2",
+ *       "lat": 43.93681771851052,
+ *       "lon": 281.24960835509063
  *     }
  *   ]
  * }
@@ -205,56 +309,56 @@ export const transformQueryResults = (apiResponse: QueryDataResponse, coordinate
   // 提取唯一的文件路径
   const uniqueFiles = Array.from(new Set(results.map(r => r.path.split('/').pop() || r.path)))
   
-  // 按时间戳分组数据（同一时间的不同变量）
-  const groupedByTime = new Map<string, any>()
+  // 按时间戳和坐标分组数据（同一时间同一位置的不同变量）
+  const groupedByTimeAndLocation = new Map<string, any>()
   
   results.forEach(item => {
-    const timestamp = item.prediction_time
-    if (!groupedByTime.has(timestamp)) {
-      groupedByTime.set(timestamp, {
-        timestamp,
-        lat: coordinate?.lat || 0,
-        lng: coordinate?.lng || 0,
-        temperature: null,
-        windSpeed: null,
-        pressure: null,
-        humidity: null,
-        rawData: []
+    // 使用时间戳 + 坐标作为唯一键
+    const key = `${item.prediction_time}_${item.lat.toFixed(6)}_${item.lon.toFixed(6)}`
+    
+    if (!groupedByTimeAndLocation.has(key)) {
+      // 经度转换：0~360 → -180~180
+      const lng = item.lon > 180 ? item.lon - 360 : item.lon
+      
+      groupedByTimeAndLocation.set(key, {
+        timestamp: item.prediction_time,
+        lat: item.lat,           // 使用真实坐标
+        lng: lng,                // 转换后的经度
+        rawData: []              // 存储原始数据（带显示名称）
       })
     }
     
-    const point = groupedByTime.get(timestamp)!
-    point.rawData.push(item)
+    const point = groupedByTimeAndLocation.get(key)!
     
-    // 根据变量类型填充数据
-    switch (item.type) {
-      case 't2m':
-        // 温度：开尔文转摄氏度
-        point.temperature = item.value_max - 273.15
-        break
-      case 'u10':
-      case 'v10':
-        // 风速：使用 value_max
-        point.windSpeed = item.value_max
-        break
-      case 'pres':
-        // 气压：Pa 转 hPa
-        point.pressure = item.value_max / 100
-        break
-      case 'rh':
-        // 湿度：百分比
-        point.humidity = item.value_max
-        break
+    // 使用后端返回的 json_key 获取显示名称
+    const displayName = VARIABLE_DISPLAY_NAMES[item.json_key] || item.json_key || item.type
+    
+    // 格式化显示值（只显示 value_max）
+    let displayValue = ''
+    
+    // 特殊处理：温度转换（开尔文 → 摄氏度）
+    if (item.type === 't2m' || item.type === 'tmax' || item.type === 'tmin' || item.type === 't') {
+      const celsius = item.value_max - 273.15
+      displayValue = `${celsius.toFixed(2)}°C`
+    } else {
+      // 其他变量：显示原始值
+      displayValue = item.value_max?.toFixed(3) || 'N/A'
     }
+    
+    // 添加到 rawData，包含显示信息
+    point.rawData.push({
+      ...item,
+      displayName,
+      displayValue
+    })
   })
   
-  // 转换为数组并填充缺失值
-  const dataPoints = Array.from(groupedByTime.values()).map(point => ({
-    ...point,
-    temperature: point.temperature !== null ? point.temperature : 0,
-    windSpeed: point.windSpeed !== null ? point.windSpeed : 0,
-    pressure: point.pressure !== null ? point.pressure : 0,
-    humidity: point.humidity !== null ? point.humidity : 0
+  // 转换为数组（只保留实际查询到的数据）
+  const dataPoints = Array.from(groupedByTimeAndLocation.values()).map(point => ({
+    timestamp: point.timestamp,
+    lat: point.lat,
+    lng: point.lng,
+    rawData: point.rawData  // 包含所有原始数据和显示信息
   }))
   
   // 按时间排序

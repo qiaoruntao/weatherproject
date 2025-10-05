@@ -4,6 +4,7 @@ import QueryPanel from '../components/UI/QueryPanel'
 import ResultsPanel from '../components/UI/ResultsPanel'
 import CoordinateInput from '../components/UI/CoordinateInput'
 import AskGPT from '../components/UI/AskGPT'
+import VisualizationPanel from '../components/UI/VisualizationPanel'
 
 const WeatherMap = dynamic(() => import('../components/Map/WeatherMap'), {
   ssr: false,
@@ -30,6 +31,7 @@ export default function Home() {
   const [isGPTExpanded, setIsGPTExpanded] = useState(false)
   const [shouldFlash, setShouldFlash] = useState(false)
   const [showResultsModal, setShowResultsModal] = useState(false)
+  const [showVisualization, setShowVisualization] = useState(false)
 
   const handlePointClick = (point: any) => {
     setSelectedMapPoint({ lat: point.lat, lng: point.lng })
@@ -84,7 +86,7 @@ export default function Home() {
                 </svg>
               </div>
               <div>
-                <h1 className="text-5xl font-bold text-white">Weather Data</h1>
+                <h1 className="text-5xl font-bold text-white">WeatherPreview</h1>
                 <p className="text-2xl text-gray-400">Management System</p>
               </div>
             </div>
@@ -138,45 +140,36 @@ export default function Home() {
               </div>
             )}
 
-            {/* 统计卡片 */}
+            {/* 结果展示卡片 */}
             <div className="grid grid-cols-2 gap-3">
               <div 
-                className="glass rounded-xl p-4 card-hover cursor-pointer"
+                className="glass rounded-xl p-5 card-hover cursor-pointer"
                 onClick={() => queryResults && setShowResultsModal(true)}
-                title="Click to view details"
+                title="View statistical results"
               >
-                <div className="text-3xl font-bold text-white mb-1">{queryResults?.count || 0}</div>
-                <div className="text-xs text-gray-400">Data Points</div>
-                {queryResults && (
-                  <button className="mt-2 text-xs text-cyan-400 hover:text-cyan-300 flex items-center">
-                    <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                    View Details
-                  </button>
-                )}
+                <div className="flex items-center mb-3">
+                  <svg className="w-7 h-7 text-cyan-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                  <span className="text-lg font-bold text-white" style={{ fontSize: '2rem' }}>Statistical Results</span>
+                </div>
+                <div className="text-3xl font-bold text-cyan-400">{queryResults?.count || 0} Points</div>
               </div>
-              <div className="glass rounded-xl p-4 card-hover">
-                <div className="text-3xl font-bold text-white mb-1">{queryResults?.files?.length || 0}</div>
-                <div className="text-xs text-gray-400">GRIB Files</div>
+              <div 
+                className="glass rounded-xl p-5 card-hover cursor-pointer"
+                onClick={() => queryResults && setShowVisualization(true)}
+                title="View visualized results"
+              >
+                <div className="flex items-center mb-3">
+                  <svg className="w-7 h-7 text-purple-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                  </svg>
+                  <span className="text-lg font-bold text-white" style={{ fontSize: '2rem' }}>Visualized Result</span>
+                </div>
+                <div className="text-3xl font-bold text-purple-400">{queryResults?.files?.length || 0} Files</div>
               </div>
             </div>
 
-            {/* 重新打开结果按钮 */}
-            {queryResults && !showResultsModal && (
-              <div className="mt-3">
-                <button
-                  onClick={() => setShowResultsModal(true)}
-                  className="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-700 hover:to-blue-600 text-white font-medium py-3 rounded-lg transition-all duration-200 hover:scale-[1.02] shadow-lg hover:shadow-xl flex items-center justify-center"
-                >
-                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  View Results
-                </button>
-              </div>
-            )}
 
             {/* 结果面板 - 已移除，使用弹窗代替 */}
 
@@ -285,24 +278,15 @@ export default function Home() {
                       <div className="space-y-3 text-xl">
                         <div className="flex justify-between">
                           <span className="text-gray-300">Location:</span>
-                          <span className="text-white font-mono">{point.lat.toFixed(4)}, {point.lng.toFixed(4)}</span>
+                          <span className="text-white font-mono">{point.lat?.toFixed(4) || 'N/A'}, {point.lng?.toFixed(4) || 'N/A'}</span>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-300">Temperature:</span>
-                          <span className="text-cyan-400 font-bold">{point.temperature.toFixed(1)}°C</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-300">Wind Speed:</span>
-                          <span className="text-white">{point.windSpeed.toFixed(1)} m/s</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-300">Pressure:</span>
-                          <span className="text-white">{point.pressure.toFixed(1)} hPa</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-300">Humidity:</span>
-                          <span className="text-white">{point.humidity.toFixed(1)}%</span>
-                        </div>
+                        {/* 动态显示所有实际存在的变量 */}
+                        {point.rawData && point.rawData.map((item: any, idx: number) => (
+                          <div key={idx} className="flex justify-between">
+                            <span className="text-gray-300">{item.displayName}:</span>
+                            <span className="text-cyan-400 font-bold">{item.displayValue}</span>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ))}
@@ -310,15 +294,27 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 底部按钮 */}
+            {/* 底部关闭按钮 */}
             <div className="p-5 border-t border-cyan-500/30 bg-gradient-to-r from-cyan-900/10 to-blue-900/10">
               <button
                 onClick={() => setShowResultsModal(false)}
-                className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700 text-white font-medium py-3 rounded-xl transition-all duration-200 hover:scale-105 shadow-lg"
+                className="w-full bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-medium py-3 rounded-xl transition-all duration-200 hover:scale-105 shadow-lg"
               >
-                Continue to View Details
+                Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 可视化模态框 */}
+      {showVisualization && queryResults && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-2xl shadow-2xl animate-scale-in">
+            <VisualizationPanel 
+              results={queryResults}
+              onClose={() => setShowVisualization(false)}
+            />
           </div>
         </div>
       )}
