@@ -1,10 +1,12 @@
 # ---------------------------------------------
 # Utilities for query time handling and nearest-record query
+import logging
 import sqlite3
 from collections.abc import Sequence, Mapping
 from contextlib import closing
 from typing import Optional
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 import numpy as np
 from eccodes import (  # type: ignore
     codes_grib_new_from_file,
@@ -99,15 +101,17 @@ def query_records_in_range(start_time, end_time, level_type: str, var: str) -> l
         return [dict(zip(cols, r)) for r in rows]
 
 
-def _msg_matches(h, *, var: str, level_type: str, target_forecast_iso: str) -> bool:
+def _msg_matches(h, *, var: str, level_type: str) -> bool:
     """
     Check if a GRIB message matches shortName==var, typeOfLevel==level_type,
     and forecast_time_utc equals the target timestamp (to the hour).
     """
     try:
-        short = _get_str_or_none(h, "cfVarName")
+        var_name = _get_str_or_none(h, "cfVarName")
+        short = _get_str_or_none(h, "shortName")
         tol = _get_str_or_none(h, "typeOfLevel")
-        if short != var or tol != level_type:
+        logging.info("var=%s, level_type=%s, short=%s" % (var_name, tol, short))
+        if (var_name != var and short != var) or tol != level_type:
             return False
         return True
     except Exception:
@@ -193,7 +197,7 @@ def query_func(start_query_time, end_query_time, level_type: str, var: str,
                 if h is None:
                     break
                 try:
-                    if _msg_matches(h, var=var, level_type=level_type, target_forecast_iso=target_fcst_iso):
+                    if _msg_matches(h, var=var, level_type=level_type):
                         # Pull (lat, lon, value) triplets — dict sequence required
                         raw = codes_grib_get_data(h)
                         if not (isinstance(raw, Sequence) and len(raw) > 0 and isinstance(raw[0], Mapping)
