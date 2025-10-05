@@ -78,15 +78,22 @@ export default function WeatherMap({
           ]}
         >
           {/* 显示数据点 */}
-          {dataPoints.map((point, index) => (
-            <AdvancedMarker
-              key={index}
-              position={{ lat: point.lat, lng: point.lng }}
-              title={`Temp: ${point.temperature.toFixed(1)}°C`}
-            >
-              <div className="w-3 h-3 bg-cyan-500 rounded-full border-2 border-white shadow-lg"></div>
-            </AdvancedMarker>
-          ))}
+          {dataPoints.map((point, index) => {
+            // 获取第一个变量的显示值作为标题
+            const titleText = point.rawData && point.rawData.length > 0
+              ? `${point.rawData[0].displayName}: ${point.rawData[0].displayValue}`
+              : `Point #${index + 1}`;
+            
+            return (
+              <AdvancedMarker
+                key={index}
+                position={{ lat: point.lat, lng: point.lng }}
+                title={titleText}
+              >
+                <div className="w-3 h-3 bg-cyan-500 rounded-full border-2 border-white shadow-lg"></div>
+              </AdvancedMarker>
+            );
+          })}
           
        {/* 显示选中点 - 调整偏移修正 */}
        {activePoint && (

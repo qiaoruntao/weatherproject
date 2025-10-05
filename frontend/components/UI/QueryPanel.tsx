@@ -11,18 +11,17 @@ interface QueryPanelProps {
 export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinate, onSubmit }: QueryPanelProps) {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
-  const [selectedVars, setSelectedVars] = useState<string[]>(['Temperature'])
+  const [selectedVariable, setSelectedVariable] = useState('t2m')
   const [isExpanded, setIsExpanded] = useState(false)
 
-  const variables = ['Temperature', 'Wind', 'Pressure', 'Humidity']
-
-  const toggleVariable = (variable: string) => {
-    setSelectedVars(prev => 
-      prev.includes(variable)
-        ? prev.filter(v => v !== variable)
-        : [...prev, variable]
-    )
-  }
+  // 真实的变量选项（对应后端的 json_key）
+  const variableOptions = [
+    { value: 't2m', label: 'Temperature', jsonKey: 't2m_heightAboveGround' },
+    { value: 'tcc', label: 'Cloud Coverage', jsonKey: 'tcc_atmosphereSingleLayer' },
+    { value: 'u10', label: 'Wind Speed', jsonKey: 'u10_heightAboveGround' },
+    { value: 'snowc', label: 'Snow Coverage', jsonKey: 'snowc_surface' },
+    { value: 'cpr', label: 'Precipitation', jsonKey: 'cpr_surface' }
+  ]
 
   // 提供给父组件调用
   React.useEffect(() => {
@@ -30,7 +29,7 @@ export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinat
       // 将handleSubmit暴露给父组件
       (window as any).__queryPanelSubmit = handleSubmit;
     }
-  }, [onSubmit, selectedCoordinate, startDate, endDate, selectedVars])
+  }, [onSubmit, selectedCoordinate, startDate, endDate, selectedVariable])
 
   const handleSubmit = async () => {
     if (!selectedCoordinate) {
@@ -51,17 +50,14 @@ export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinat
         const results = await mockQueryData({
           startTime: startDate,
           endTime: endDate,
-          variables: selectedVars,
+          variables: [selectedVariable],
           coordinate: selectedCoordinate
         })
         onQuerySubmit(results)
       } else {
-        // 使用真实后端 API
+        // 使用真实后端 API - 同时查询所有 4 个变量
         console.log('🌐 使用真实后端 API')
-        const { queryMultipleVariables, transformQueryResults, VARIABLE_MAP } = await import('../../lib/api')
-        
-        // 转换变量名：前端显示名 -> 后端变量名
-        const backendVars = selectedVars.map(v => VARIABLE_MAP[v] || v.toLowerCase())
+        const { queryWeatherData, transformQueryResults } = await import('../../lib/api')
         
         // 转换日期格式为 ISO
         const startISO = startDate ? `${startDate}T00:00:00Z` : undefined
@@ -69,23 +65,45 @@ export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinat
         
         console.log(`📍 查询坐标: (${selectedCoordinate.lat.toFixed(4)}, ${selectedCoordinate.lng.toFixed(4)})`)
         console.log(`📅 时间范围: ${startISO || '默认'} ~ ${endISO || '默认'}`)
-        console.log(`🔬 查询变量: ${backendVars.join(', ')}`)
+        console.log(`🔬 查询所有变量: ${variableOptions.map(v => v.label).join(', ')}`)
         
-        // 使用新的多变量查询函数（循环调用后端）
-        const apiResponse = await queryMultipleVariables(
-          selectedCoordinate,
-          startISO,
-          endISO,
-          backendVars,
-          'heightAboveGround'  // 使用真实后端的 level 值
-        )
+        // 同时查询所有 5 个变量
+        const allResults: any[] = []
+        for (const varOption of variableOptions) {
+          try {
+            // 根据 jsonKey 确定正确的 level
+            let level = 'heightAboveGround' // 默认
+            if (varOption.jsonKey.includes('surface')) {
+              level = 'surface'
+            } else if (varOption.jsonKey.includes('atmosphereSingleLayer')) {
+              level = 'atmosphereSingleLayer'
+            }
+            
+            console.log(`  ➤ 查询: ${varOption.label} (${varOption.value}, level: ${level})`)
+            
+            const response = await queryWeatherData({
+              coordinate: selectedCoordinate,
+              startTime: startISO,
+              endTime: endISO,
+              variable: varOption.value,
+              level: level
+            })
+            
+            if (response.results && response.results.length > 0) {
+              allResults.push(...response.results)
+              console.log(`  ✅ ${varOption.label}: ${response.results.length} 条数据`)
+            }
+          } catch (error) {
+            console.error(`  ❌ ${varOption.label} 查询失败:`, error)
+          }
+        }
         
         // 转换为前端格式（传递坐标信息）
-        const results = transformQueryResults(apiResponse, selectedCoordinate)
+        const results = transformQueryResults({ count: allResults.length, results: allResults }, selectedCoordinate)
         
         console.log(`🔍 查询完成: 坐标(${selectedCoordinate.lat.toFixed(4)}, ${selectedCoordinate.lng.toFixed(4)}), 来源: ${selectedCoordinate.source}`)
         console.log(`📊 结果: ${results.count} 条数据点, ${results.files.length} 个文件`)
-        console.log(`📋 原始结果数: ${apiResponse.count} 条记录`)
+        console.log(`📋 原始结果数: ${allResults.length} 条记录`)
         
         onQuerySubmit(results)
       }
@@ -145,23 +163,8 @@ export default function QueryPanel({ onQuerySubmit, onLoading, selectedCoordinat
           />
         </div>
         
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">Variables</label>
-          <div className="flex flex-wrap gap-2">
-            {variables.map((item) => (
-              <button
-                key={item}
-                onClick={() => toggleVariable(item)}
-                className={`px-3 py-1 border border-white/20 rounded-full text-xs text-white transition-all duration-200 hover:scale-105 ${
-                  selectedVars.includes(item)
-                    ? 'bg-gradient-to-r from-cyan-600 to-cyan-500'
-                    : 'bg-white/10 hover:bg-white/20'
-                }`}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+        <div className="text-xs text-gray-400 bg-white/5 rounded-lg p-3 border border-white/10">
+          <span className="text-cyan-400 font-medium">📊 Querying all variables:</span> Temperature, Cloud Coverage, Wind Speed, Snow Coverage, Precipitation
         </div>
         </div>
       </div>
