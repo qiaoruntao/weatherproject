@@ -38,13 +38,13 @@
 
 ## 📸 Screenshots
 
-### Main Interface
+### Statistical Results
 ![Main Interface](Screenshots/Screenshot%20from%202025-10-05%2020-39-42.png)
 
-### Statistical Results
+### Professional Visualization
 ![Statistical Results](Screenshots/Screenshot%20from%202025-10-05%2020-41-26.png)
 
-### Professional Visualization
+### LLM Implementation
 ![Visualization](Screenshots/Screenshot%20from%202025-10-05%2020-43-34.png)
 
 ---
